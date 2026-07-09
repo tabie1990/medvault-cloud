@@ -1,0 +1,16 @@
+# Local development only — spins up Postgres so you can run the API with
+# `npm run dev` against a real database without installing Postgres yourself.
+# Production does not use Docker — see SETUP.md (plain PostgreSQL on the VPS).
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: medvault_cloud
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:

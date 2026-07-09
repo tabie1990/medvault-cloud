@@ -1,0 +1,313 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Enums ──────────────────────────────────────────────────────────────────
+
+enum HospitalStatus      { active suspended disabled }
+enum InstallationStatus  { active suspended revoked }
+enum EventDirection      { hospital_to_cloud cloud_to_hospital }
+enum SyncStatus          { pending queued processed failed ignored }
+enum AppointmentStatus   { pending confirmed cancelled completed rejected }
+enum ProviderType        { hospital independent lab pharmacy }
+enum VerificationStatus  { pending verified rejected suspended }
+enum LabServiceType      { home_visit on_site both }
+enum LabOrderStatus      { requested scheduled sample_collected in_progress completed cancelled }
+enum TelemedicineStatus  { scheduled ongoing completed cancelled no_show }
+enum NotificationChannel { whatsapp push sms email }
+enum NotificationStatus  { pending sent failed }
+enum OtpPurpose          { patient_login doctor_login }
+
+// ── Core: hospitals, installations, identity, sync (Phase 1-6) ─────────────
+
+model Hospital {
+  id            String   @id @default(uuid()) @db.Uuid
+  hospitalId    String   @unique
+  hospitalCode  String   @unique @db.VarChar(3)
+  name          String
+  country       String   @default("Cameroon")
+  region        String?
+  city          String?
+  status        HospitalStatus @default(active)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  installations HospitalInstallation[]
+  patientMaps   PatientIdentityMap[]
+  appointments  Appointment[]
+  labProviders  LabProvider[]
+  labOrders     LabOrder[]
+}
+
+model HospitalInstallation {
+  id                   String   @id @default(uuid()) @db.Uuid
+  hospitalId           String
+  installationId       String   @unique @db.Uuid
+  deviceLabel          String?
+  licenseKeyHash       String
+  // Reversibly encrypted (AES-256-GCM, see services/crypto.service.ts) so the
+  // server can compute the expected HMAC without ever asking the client to
+  // resend the raw secret on every request.
+  hmacSecretEncrypted  String
+  status               InstallationStatus @default(active)
+  lastSeenAt           DateTime?
+  createdAt            DateTime @default(now())
+  hospital             Hospital @relation(fields: [hospitalId], references: [hospitalId])
+  patientMaps          PatientIdentityMap[]
+}
+
+model GlobalPatient {
+  id                 String   @id @default(uuid()) @db.Uuid
+  globalPatientId    String   @unique
+  primaryPhone       String?
+  email              String?
+  fullName           String?
+  dob                DateTime?
+  sex                String?
+  country            String   @default("Cameroon")
+  identityConfidence Decimal  @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  identityMaps       PatientIdentityMap[]
+  appointments       Appointment[]
+  labOrders          LabOrder[]
+  telemedicineSessions TelemedicineSession[]
+  whatsAppContacts   WhatsAppContact[]
+}
+
+model PatientIdentityMap {
+  id                  String   @id @default(uuid()) @db.Uuid
+  globalPatientId     String
+  hospitalId          String
+  installationId      String   @db.Uuid
+  hospitalPatientUuid String   @db.Uuid
+  localPatientId      String
+  hospitalCode        String   @db.VarChar(3)
+  matchStatus         String   @default("confirmed")
+  createdAt           DateTime @default(now())
+  globalPatient       GlobalPatient @relation(fields: [globalPatientId], references: [globalPatientId])
+  hospital            Hospital @relation(fields: [hospitalId], references: [hospitalId])
+  installation        HospitalInstallation @relation(fields: [installationId], references: [installationId])
+
+  @@unique([hospitalId, localPatientId])
+  @@unique([hospitalId, hospitalPatientUuid])
+}
+
+model SyncEvent {
+  id              String @id @default(uuid()) @db.Uuid
+  hospitalId      String
+  installationId  String @db.Uuid
+  eventId         String @db.Uuid
+  eventType       String
+  entityType      String
+  entityId        String
+  localPatientId  String?
+  globalPatientId String?
+  payload         Json
+  direction       EventDirection
+  status          SyncStatus @default(pending)
+  errorMessage    String?
+  createdAt       DateTime @default(now())
+  queuedAt        DateTime?
+  processedAt     DateTime?
+
+  @@unique([hospitalId, installationId, eventId])
+  @@index([hospitalId, status])
+  @@index([globalPatientId])
+}
+
+model Appointment {
+  id                String @id @default(uuid()) @db.Uuid
+  appointmentRef    String @unique
+  globalPatientId   String?
+  hospitalId        String?
+  doctorId          String? @db.Uuid
+  appointmentType   String
+  requestedDate     DateTime?
+  requestedTime     String?
+  status            AppointmentStatus @default(pending)
+  source            String
+  channel           String?
+  notes             String?
+  payload           Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  globalPatient     GlobalPatient? @relation(fields: [globalPatientId], references: [globalPatientId])
+  hospital          Hospital? @relation(fields: [hospitalId], references: [hospitalId])
+  doctor            Doctor? @relation(fields: [doctorId], references: [id])
+  telemedicineSession TelemedicineSession?
+  referredLabOrders LabOrder[]
+}
+
+model Doctor {
+  id                  String @id @default(uuid()) @db.Uuid
+  doctorRef           String @unique
+  fullName            String
+  phone               String?
+  email               String?
+  passwordHash        String?
+  specialty           String?
+  licenseNumber       String?
+  verificationStatus  VerificationStatus @default(pending)
+  providerType        ProviderType @default(independent)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  appointments        Appointment[]
+  labProviders        LabProvider[]
+  labOrdersReferred   LabOrder[]
+  telemedicineSessions TelemedicineSession[]
+}
+
+model AuditLog {
+  id          String @id @default(uuid()) @db.Uuid
+  actorType   String?
+  actorId     String?
+  action      String
+  entityType  String?
+  entityId    String?
+  ipAddress   String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+}
+
+// ── New: lab marketplace, telemedicine, notifications, auth support ────────
+
+model LabProvider {
+  id                 String   @id @default(uuid()) @db.Uuid
+  providerRef        String   @unique
+  name               String
+  ownerDoctorId      String?  @db.Uuid
+  hospitalId         String?
+  serviceType        LabServiceType @default(on_site)
+  homeServiceFee     Decimal? @default(0)
+  city               String?
+  region             String?
+  verificationStatus VerificationStatus @default(pending)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  ownerDoctor        Doctor?   @relation(fields: [ownerDoctorId], references: [id])
+  hospital           Hospital? @relation(fields: [hospitalId], references: [hospitalId])
+  services           LabService[]
+  orders             LabOrder[]
+}
+
+model LabService {
+  id              String  @id @default(uuid()) @db.Uuid
+  labProviderId   String  @db.Uuid
+  testName        String
+  testCode        String?
+  basePrice       Decimal
+  turnaroundHours Int?    @default(24)
+  isActive        Boolean @default(true)
+  createdAt       DateTime @default(now())
+  labProvider     LabProvider @relation(fields: [labProviderId], references: [id])
+  orderItems      LabOrderItem[]
+}
+
+model LabOrder {
+  id                    String   @id @default(uuid()) @db.Uuid
+  orderRef              String   @unique
+  globalPatientId       String?
+  hospitalId            String?
+  referringDoctorId     String?  @db.Uuid
+  referralAppointmentId String?  @db.Uuid
+  labProviderId         String   @db.Uuid
+  serviceType           LabServiceType
+  homeAddress           String?
+  scheduledDate         DateTime?
+  scheduledTime         String?
+  status                LabOrderStatus @default(requested)
+  totalCost             Decimal?
+  paymentStatus         String?  @default("unpaid")
+  resultPayload         Json?
+  source                String
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  globalPatient         GlobalPatient? @relation(fields: [globalPatientId], references: [globalPatientId])
+  hospital              Hospital?      @relation(fields: [hospitalId], references: [hospitalId])
+  referringDoctor       Doctor?        @relation(fields: [referringDoctorId], references: [id])
+  referralAppointment   Appointment?   @relation(fields: [referralAppointmentId], references: [id])
+  labProvider           LabProvider    @relation(fields: [labProviderId], references: [id])
+  items                 LabOrderItem[]
+
+  @@index([globalPatientId])
+  @@index([labProviderId, status])
+}
+
+model LabOrderItem {
+  id           String  @id @default(uuid()) @db.Uuid
+  labOrderId   String  @db.Uuid
+  labServiceId String  @db.Uuid
+  priceAtOrder Decimal
+  labOrder     LabOrder   @relation(fields: [labOrderId], references: [id])
+  labService   LabService @relation(fields: [labServiceId], references: [id])
+}
+
+model TelemedicineSession {
+  id              String  @id @default(uuid()) @db.Uuid
+  sessionRef      String  @unique
+  appointmentId   String  @unique @db.Uuid
+  doctorId        String? @db.Uuid
+  globalPatientId String?
+  roomProvider    String  @default("daily.co")
+  roomUrl         String?
+  status          TelemedicineStatus @default(scheduled)
+  startedAt       DateTime?
+  endedAt         DateTime?
+  createdAt       DateTime @default(now())
+  appointment     Appointment    @relation(fields: [appointmentId], references: [id])
+  doctor          Doctor?        @relation(fields: [doctorId], references: [id])
+  globalPatient   GlobalPatient? @relation(fields: [globalPatientId], references: [globalPatientId])
+}
+
+model Notification {
+  id            String  @id @default(uuid()) @db.Uuid
+  channel       NotificationChannel
+  recipientType String
+  recipientRef  String
+  templateType  String
+  payload       Json
+  status        NotificationStatus @default(pending)
+  errorMessage  String?
+  sentAt        DateTime?
+  createdAt     DateTime @default(now())
+
+  @@index([status])
+}
+
+model WhatsAppContact {
+  id                String   @id @default(uuid()) @db.Uuid
+  waPhoneNumber     String   @unique
+  globalPatientId   String?
+  conversationState Json?
+  lastInteractionAt DateTime?
+  createdAt         DateTime @default(now())
+  globalPatient     GlobalPatient? @relation(fields: [globalPatientId], references: [globalPatientId])
+}
+
+model DeviceToken {
+  id        String @id @default(uuid()) @db.Uuid
+  ownerType String
+  ownerRef  String
+  platform  String
+  pushToken String
+  createdAt DateTime @default(now())
+
+  @@unique([ownerType, ownerRef, pushToken])
+}
+
+model OtpCode {
+  id          String     @id @default(uuid()) @db.Uuid
+  phone       String
+  code        String
+  purpose     OtpPurpose
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  createdAt   DateTime   @default(now())
+
+  @@index([phone, purpose])
+}
