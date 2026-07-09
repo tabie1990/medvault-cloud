@@ -19,7 +19,7 @@ async function fanOutNewAppointments() {
     where: {
       status: 'pending',
       hospitalId: { not: null },
-      NOT: { payload: { path: ['_synced'], equals: true } }
+      syncedToHospitalAt: null
     },
     take: 25
   });
@@ -42,7 +42,7 @@ async function fanOutNewAppointments() {
     });
     await prisma.appointment.update({
       where: { id: appt.id },
-      data: { payload: { ...(appt.payload as object), _synced: true } }
+      data: { syncedToHospitalAt: new Date() }
     });
   }
 }
@@ -51,8 +51,10 @@ async function fanOutLabOrderEvents() {
   const orders = await prisma.labOrder.findMany({
     where: {
       hospitalId: { not: null },
-      status: { in: ['requested', 'completed'] },
-      NOT: { resultPayload: { path: ['_synced'], equals: true } }
+      OR: [
+        { status: 'requested', lastSyncedStatus: null },
+        { status: 'completed', NOT: { lastSyncedStatus: 'completed' } }
+      ]
     },
     take: 25
   });
@@ -75,13 +77,21 @@ async function fanOutLabOrderEvents() {
     });
     await prisma.labOrder.update({
       where: { id: order.id },
-      data: { resultPayload: { ...((order.resultPayload as object) ?? {}), _synced: true } }
+      data: { lastSyncedStatus: order.status }
     });
   }
 }
 
-async function markQueuedSyncEventsProcessed() {
-  const queued = await prisma.syncEvent.findMany({ where: { status: 'queued' }, take: 50 });
+const ACK_TIMEOUT_MINUTES = 30;
+
+// hospital_to_cloud events: the cloud already did whatever processing it
+// needs synchronously in POST /sync/push (e.g. creating the GlobalPatient),
+// so 'queued' here just means "logged" — safe to finalize automatically.
+async function finalizeHospitalPushedEvents() {
+  const queued = await prisma.syncEvent.findMany({
+    where: { status: 'queued', direction: 'hospital_to_cloud' },
+    take: 50
+  });
   for (const evt of queued) {
     await prisma.syncEvent.update({
       where: { id: evt.id },
@@ -90,10 +100,24 @@ async function markQueuedSyncEventsProcessed() {
   }
 }
 
+// cloud_to_hospital events: 'queued' means "delivered via GET /sync/pull,
+// awaiting the hospital's POST /sync/ack". If a hospital pulls an event but
+// then loses connectivity before it can apply it locally and ack, that
+// event must NOT be silently marked processed — it needs to go back to
+// 'pending' so the next pull redelivers it.
+async function requeueStaleUnackedEvents() {
+  const cutoff = new Date(Date.now() - ACK_TIMEOUT_MINUTES * 60 * 1000);
+  await prisma.syncEvent.updateMany({
+    where: { status: 'queued', direction: 'cloud_to_hospital', queuedAt: { lt: cutoff } },
+    data: { status: 'pending' }
+  });
+}
+
 export function startPollers() {
   setInterval(() => fanOutNewAppointments().catch((e) => console.error('poller:appointments', e)), INTERVAL_MS);
   setInterval(() => fanOutLabOrderEvents().catch((e) => console.error('poller:lab-orders', e)), INTERVAL_MS);
-  setInterval(() => markQueuedSyncEventsProcessed().catch((e) => console.error('poller:sync-events', e)), INTERVAL_MS);
+  setInterval(() => finalizeHospitalPushedEvents().catch((e) => console.error('poller:sync-events', e)), INTERVAL_MS);
+  setInterval(() => requeueStaleUnackedEvents().catch((e) => console.error('poller:sync-requeue', e)), INTERVAL_MS);
   setInterval(() => dispatchPendingNotifications().catch((e) => console.error('poller:notifications', e)), INTERVAL_MS);
   console.log('In-process pollers started (appointments, lab orders, sync events, notifications).');
 }

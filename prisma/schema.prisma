@@ -9,19 +9,93 @@ datasource db {
 
 // ── Enums ──────────────────────────────────────────────────────────────────
 
-enum HospitalStatus      { active suspended disabled }
-enum InstallationStatus  { active suspended revoked }
-enum EventDirection      { hospital_to_cloud cloud_to_hospital }
-enum SyncStatus          { pending queued processed failed ignored }
-enum AppointmentStatus   { pending confirmed cancelled completed rejected }
-enum ProviderType        { hospital independent lab pharmacy }
-enum VerificationStatus  { pending verified rejected suspended }
-enum LabServiceType      { home_visit on_site both }
-enum LabOrderStatus      { requested scheduled sample_collected in_progress completed cancelled }
-enum TelemedicineStatus  { scheduled ongoing completed cancelled no_show }
-enum NotificationChannel { whatsapp push sms email }
-enum NotificationStatus  { pending sent failed }
-enum OtpPurpose          { patient_login doctor_login }
+enum HospitalStatus {
+  active
+  suspended
+  disabled
+}
+
+enum InstallationStatus {
+  active
+  suspended
+  revoked
+}
+
+enum EventDirection {
+  hospital_to_cloud
+  cloud_to_hospital
+}
+
+enum SyncStatus {
+  pending
+  queued
+  processed
+  failed
+  ignored
+}
+
+enum AppointmentStatus {
+  pending
+  confirmed
+  cancelled
+  completed
+  rejected
+}
+
+enum ProviderType {
+  hospital
+  independent
+  lab
+  pharmacy
+}
+
+enum VerificationStatus {
+  pending
+  verified
+  rejected
+  suspended
+}
+
+enum LabServiceType {
+  home_visit
+  on_site
+  both
+}
+
+enum LabOrderStatus {
+  requested
+  scheduled
+  sample_collected
+  in_progress
+  completed
+  cancelled
+}
+
+enum TelemedicineStatus {
+  scheduled
+  ongoing
+  completed
+  cancelled
+  no_show
+}
+
+enum NotificationChannel {
+  whatsapp
+  push
+  sms
+  email
+}
+
+enum NotificationStatus {
+  pending
+  sent
+  failed
+}
+
+enum OtpPurpose {
+  patient_login
+  doctor_login
+}
 
 // ── Core: hospitals, installations, identity, sync (Phase 1-6) ─────────────
 
@@ -134,6 +208,13 @@ model Appointment {
   channel           String?
   notes             String?
   payload           Json?
+  syncedToHospitalAt DateTime? // NULL = not yet fanned out to the hospital's sync queue.
+                               // Dedicated column, not a JSON payload marker — a JSON-path
+                               // "equals: true" filter silently excludes rows where the key
+                               // doesn't exist at all (NULL comparisons in SQL are neither
+                               // true nor false, so WHERE treats them as no-match), which is
+                               // the opposite of what "not yet synced" needs. Found via a real
+                               // pilot appointment that never reached the hospital.
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
   globalPatient     GlobalPatient? @relation(fields: [globalPatientId], references: [globalPatientId])
@@ -224,6 +305,13 @@ model LabOrder {
   totalCost             Decimal?
   paymentStatus         String?  @default("unpaid")
   resultPayload         Json?
+  lastSyncedStatus      LabOrderStatus? // NULL = never synced. Tracks *which status* was
+                                        // last fanned out, not just whether it ever was —
+                                        // a LabOrder legitimately needs a sync event both when
+                                        // requested AND again when completed (that's the whole
+                                        // point of lab results reaching the hospital). A plain
+                                        // one-time boolean would silently swallow the second
+                                        // transition after the first sync fired.
   source                String
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt

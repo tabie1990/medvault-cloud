@@ -8,9 +8,14 @@ import { env } from '../config/env.js';
  * signature — never the raw secret — matching the point of HMAC signing.
  * The server decrypts its own stored copy of the secret to compute the
  * expected signature and compares in constant time.
+ *
+ * `signedMessage` is whatever the client signed: the raw JSON body for
+ * POST requests (push, ack), or a fixed string like the hospital_id for
+ * GET requests that have no body (pull) — the caller decides, this
+ * function just verifies against whichever message is passed in.
  */
 export async function verifyHospitalHmac(
-  rawBody: string,
+  signedMessage: string,
   headers: Record<string, string | string[] | undefined>
 ) {
   const hospitalId = String(headers['x-medvault-hospital-id'] ?? '');
@@ -39,7 +44,7 @@ export async function verifyHospitalHmac(
     return { ok: false as const, reason: 'secret_decrypt_failed' };
   }
 
-  const expected = crypto.createHmac('sha256', secret).update(`${timestamp}.${rawBody}`).digest('hex');
+  const expected = crypto.createHmac('sha256', secret).update(`${timestamp}.${signedMessage}`).digest('hex');
   const expectedBuf = Buffer.from(expected, 'hex');
   const signatureBuf = Buffer.from(signature, 'hex');
 
