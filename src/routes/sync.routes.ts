@@ -23,35 +23,58 @@ syncRouter.post(
     for (const event of events) {
       let globalPatientId: string | null = event.global_patient_id ?? null;
 
-      if (event.event_type === 'patient.created' && !globalPatientId) {
-        const existing = await prisma.patientIdentityMap.findFirst({
-          where: { hospitalId: auth.hospitalId, localPatientId: event.local_patient_id }
-        });
-        if (existing) {
-          globalPatientId = existing.globalPatientId;
+      if (event.event_type === 'patient.created') {
+        if (globalPatientId) {
+          // The hospital already knows which global patient this is — most
+          // likely a local record just created to represent someone who
+          // first appeared via a cloud-originated booking (web portal/
+          // WhatsApp). Don't mint a second global identity for the same
+          // person; just ensure the identity map exists.
+          const existingMap = await prisma.patientIdentityMap.findFirst({
+            where: { hospitalId: auth.hospitalId, localPatientId: event.local_patient_id }
+          });
+          if (!existingMap) {
+            await prisma.patientIdentityMap.create({
+              data: {
+                globalPatientId,
+                hospitalId: auth.hospitalId,
+                installationId: auth.installationId,
+                hospitalPatientUuid: event.entity_id,
+                localPatientId: event.local_patient_id,
+                hospitalCode: event.hospital_code
+              }
+            });
+          }
         } else {
-          globalPatientId = await generateGlobalPatientId();
-          await prisma.globalPatient.create({
-            data: {
-              globalPatientId,
-              primaryPhone: event.payload?.phone,
-              email: event.payload?.email,
-              fullName: event.payload?.name ?? event.payload?.full_name,
-              dob: event.payload?.dob ? new Date(event.payload.dob) : undefined,
-              sex: event.payload?.sex,
-              identityConfidence: 75
-            }
+          const existing = await prisma.patientIdentityMap.findFirst({
+            where: { hospitalId: auth.hospitalId, localPatientId: event.local_patient_id }
           });
-          await prisma.patientIdentityMap.create({
-            data: {
-              globalPatientId,
-              hospitalId: auth.hospitalId,
-              installationId: auth.installationId,
-              hospitalPatientUuid: event.entity_id,
-              localPatientId: event.local_patient_id,
-              hospitalCode: event.hospital_code
-            }
-          });
+          if (existing) {
+            globalPatientId = existing.globalPatientId;
+          } else {
+            globalPatientId = await generateGlobalPatientId();
+            await prisma.globalPatient.create({
+              data: {
+                globalPatientId,
+                primaryPhone: event.payload?.phone,
+                email: event.payload?.email,
+                fullName: event.payload?.name ?? event.payload?.full_name,
+                dob: event.payload?.dob ? new Date(event.payload.dob) : undefined,
+                sex: event.payload?.sex,
+                identityConfidence: 75
+              }
+            });
+            await prisma.patientIdentityMap.create({
+              data: {
+                globalPatientId,
+                hospitalId: auth.hospitalId,
+                installationId: auth.installationId,
+                hospitalPatientUuid: event.entity_id,
+                localPatientId: event.local_patient_id,
+                hospitalCode: event.hospital_code
+              }
+            });
+          }
         }
       }
 

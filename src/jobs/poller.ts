@@ -14,6 +14,34 @@ import crypto from 'crypto';
 
 const INTERVAL_MS = 10_000;
 
+/**
+ * Builds the identity payload sent alongside a booking. If this hospital
+ * already has a local record for this global patient (they've been seen
+ * here before, possibly at a different hospital originally), that's an
+ * exact, known fact — not a guess — so it's surfaced separately from the
+ * phone/name/dob details used for fuzzy matching on a genuinely new patient.
+ */
+async function buildPatientIdentity(globalPatientId: string | null) {
+  if (!globalPatientId) return null;
+  const patient = await prisma.globalPatient.findUnique({ where: { globalPatientId } });
+  if (!patient) return null;
+  return {
+    phone: patient.primaryPhone,
+    fullName: patient.fullName,
+    dob: patient.dob,
+    sex: patient.sex
+  };
+}
+
+async function findExistingLocalPatient(globalPatientId: string | null, hospitalId: string | null) {
+  if (!globalPatientId || !hospitalId) return null;
+  const map = await prisma.patientIdentityMap.findFirst({
+    where: { globalPatientId, hospitalId }
+  });
+  if (!map) return null;
+  return { localPatientId: map.localPatientId, hospitalCode: map.hospitalCode };
+}
+
 async function fanOutNewAppointments() {
   const pending = await prisma.appointment.findMany({
     where: {
@@ -26,6 +54,10 @@ async function fanOutNewAppointments() {
 
   for (const appt of pending) {
     if (!appt.hospitalId) continue;
+
+    const patientIdentity = await buildPatientIdentity(appt.globalPatientId);
+    const existingLocalPatient = await findExistingLocalPatient(appt.globalPatientId, appt.hospitalId);
+
     await prisma.syncEvent.create({
       data: {
         hospitalId: appt.hospitalId,
@@ -35,7 +67,7 @@ async function fanOutNewAppointments() {
         entityType: 'appointment',
         entityId: appt.id,
         globalPatientId: appt.globalPatientId,
-        payload: appt as any,
+        payload: { ...appt, patientIdentity, existingLocalPatient } as any,
         direction: 'cloud_to_hospital',
         status: 'pending'
       }
@@ -61,6 +93,10 @@ async function fanOutLabOrderEvents() {
 
   for (const order of orders) {
     if (!order.hospitalId) continue;
+
+    const patientIdentity = await buildPatientIdentity(order.globalPatientId);
+    const existingLocalPatient = await findExistingLocalPatient(order.globalPatientId, order.hospitalId);
+
     await prisma.syncEvent.create({
       data: {
         hospitalId: order.hospitalId,
@@ -70,7 +106,7 @@ async function fanOutLabOrderEvents() {
         entityType: 'lab_order',
         entityId: order.id,
         globalPatientId: order.globalPatientId,
-        payload: order as any,
+        payload: { ...order, patientIdentity, existingLocalPatient } as any,
         direction: 'cloud_to_hospital',
         status: 'pending'
       }
