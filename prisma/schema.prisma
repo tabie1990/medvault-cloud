@@ -231,16 +231,48 @@ model Doctor {
   phone               String?
   email               String?
   passwordHash        String?
+  mustChangePassword  Boolean @default(false)
   specialty           String?
   licenseNumber       String?
   verificationStatus  VerificationStatus @default(pending)
   providerType        ProviderType @default(independent)
+  // KYC — manual document review, no automated verification exists for
+  // Cameroon's Ordre National des Médecins register. See ARCHITECTURE.md.
+  nationalIdDocumentKey     String? // object storage key, not a public URL
+  medicalLicenseDocumentKey String?
+  selfieKey                 String?
+  kycSubmittedAt            DateTime?
+  kycReviewedAt             DateTime?
+  kycReviewedBy             String?  // AdminUser.id
+  kycRejectionReason        String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
   appointments        Appointment[]
   labProviders        LabProvider[]
   labOrdersReferred   LabOrder[]
   telemedicineSessions TelemedicineSession[]
+}
+
+model LabStaff {
+  id                 String   @id @default(uuid()) @db.Uuid
+  labProviderId      String   @db.Uuid
+  fullName           String
+  email              String?
+  phone              String?
+  passwordHash       String
+  mustChangePassword Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  labProvider        LabProvider @relation(fields: [labProviderId], references: [id])
+}
+
+model AdminUser {
+  id                 String   @id @default(uuid()) @db.Uuid
+  email              String   @unique
+  fullName           String
+  passwordHash       String
+  mustChangePassword Boolean  @default(false)
+  createdAt          DateTime @default(now())
 }
 
 model AuditLog {
@@ -268,12 +300,22 @@ model LabProvider {
   city               String?
   region             String?
   verificationStatus VerificationStatus @default(pending)
+  // KYC — same manual-review reasoning as Doctor above.
+  businessRegistrationNumber     String?
+  businessRegistrationDocumentKey String?
+  labAccreditationDocumentKey     String?
+  ownerIdDocumentKey              String?
+  kycSubmittedAt                  DateTime?
+  kycReviewedAt                   DateTime?
+  kycReviewedBy                   String? // AdminUser.id
+  kycRejectionReason              String?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
   ownerDoctor        Doctor?   @relation(fields: [ownerDoctorId], references: [id])
   hospital           Hospital? @relation(fields: [hospitalId], references: [hospitalId])
   services           LabService[]
   orders             LabOrder[]
+  staff              LabStaff[]
 }
 
 model LabService {
