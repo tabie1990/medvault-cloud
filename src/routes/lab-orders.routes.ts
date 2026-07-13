@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { prisma } from '../db/prisma.js';
 import {
   createLabOrder,
   getLabOrder,
@@ -52,16 +53,34 @@ labOrdersRouter.get(
 
 labOrdersRouter.patch(
   '/:id',
-  requireAuth('doctor'),
-  asyncHandler(async (req, res) => {
+  requireAuth('doctor', 'lab_staff'),
+  asyncHandler(async (req: AuthedRequest, res) => {
     const { status, result_payload, payment_status } = req.body;
     if (!status) return res.status(400).json({ success: false, error: 'status is required' });
-    const order = await updateLabOrderStatus(req.params.id, {
+
+    const order = await getLabOrder(req.params.id);
+    if (!order) return res.status(404).json({ success: false, error: 'lab_order_not_found' });
+
+    // The actual fix: a doctor can only touch a lab order they referred or
+    // whose lab they own — not any arbitrary doctor. Lab staff can only
+    // touch orders belonging to their own lab.
+    let allowed = false;
+    if (req.user!.role === 'doctor') {
+      allowed = order.referringDoctorId === req.user!.sub || order.labProvider.ownerDoctorId === req.user!.sub;
+    } else if (req.user!.role === 'lab_staff') {
+      const staff = await prisma.labStaff.findUnique({ where: { id: req.user!.sub } });
+      allowed = Boolean(staff && staff.labProviderId === order.labProviderId);
+    }
+    if (!allowed) {
+      return res.status(403).json({ success: false, error: 'not_authorized_for_this_lab_order' });
+    }
+
+    const updated = await updateLabOrderStatus(req.params.id, {
       status,
       resultPayload: result_payload,
       paymentStatus: payment_status
     });
-    res.json({ success: true, lab_order: order });
+    res.json({ success: true, lab_order: updated });
   })
 );
 

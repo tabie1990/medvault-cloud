@@ -9,6 +9,14 @@ export async function createTelemedicineSession(appointmentId: string, doctorId?
     throw new Error('appointment_is_not_a_teleconsult');
   }
 
+  const effectiveDoctorId = doctorId ?? appointment.doctorId ?? undefined;
+  if (effectiveDoctorId) {
+    const doctor = await prisma.doctor.findUnique({ where: { id: effectiveDoctorId } });
+    if (!doctor || doctor.verificationStatus !== 'verified') {
+      throw new Error('doctor_not_kyc_verified');
+    }
+  }
+
   const existing = await prisma.telemedicineSession.findUnique({ where: { appointmentId } });
   if (existing) return existing;
 
@@ -19,7 +27,7 @@ export async function createTelemedicineSession(appointmentId: string, doctorId?
     data: {
       sessionRef,
       appointmentId,
-      doctorId: doctorId ?? appointment.doctorId ?? undefined,
+      doctorId: effectiveDoctorId,
       globalPatientId: appointment.globalPatientId ?? undefined,
       roomUrl
     }

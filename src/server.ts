@@ -18,6 +18,8 @@ import { labOrdersRouter } from './routes/lab-orders.routes.js';
 import { telemedicineRouter } from './routes/telemedicine.routes.js';
 import { notificationsRouter } from './routes/notifications.routes.js';
 import { whatsappRouter } from './routes/whatsapp.routes.js';
+import { authRouter } from './routes/auth.routes.js';
+import { adminRouter } from './routes/admin.routes.js';
 
 const app = express();
 app.use(helmet());
@@ -68,7 +70,21 @@ const openApi = {
     '/api/v1/whatsapp/webhook': {
       get: { summary: "Meta's webhook verification handshake" },
       post: { summary: 'Inbound WhatsApp messages -> AI agent' }
-    }
+    },
+    '/api/v1/auth/login': { post: { summary: 'Unified login for doctor, lab-staff, and admin accounts' } },
+    '/api/v1/auth/change-password': { post: { summary: 'Change password (admin or lab-staff auth required)' } },
+    '/api/v1/doctors/change-password': { post: { summary: 'Change password (doctor auth required)' } },
+    '/api/v1/doctors/kyc/upload-url': { post: { summary: 'Get a presigned upload URL for a KYC document (doctor auth)' } },
+    '/api/v1/doctors/kyc': { post: { summary: 'Submit doctor KYC documents (doctor auth)' } },
+    '/api/v1/lab-providers/{id}/kyc/upload-url': { post: { summary: 'Presigned upload URL for lab KYC (owner doctor auth)' } },
+    '/api/v1/lab-providers/{id}/kyc': { post: { summary: 'Submit lab KYC documents (owner doctor auth)' } },
+    '/api/v1/lab-providers/{id}/staff': {
+      post: { summary: 'Create a lab-staff login for this lab (owner doctor auth)' },
+      get: { summary: 'List this lab\'s staff (owner doctor auth)' }
+    },
+    '/api/v1/admin/kyc/pending': { get: { summary: 'Pending doctor/lab KYC submissions (admin auth)' } },
+    '/api/v1/admin/kyc/doctors/{id}/decision': { post: { summary: 'Approve/reject a doctor\'s KYC (admin auth)' } },
+    '/api/v1/admin/kyc/lab-providers/{id}/decision': { post: { summary: 'Approve/reject a lab\'s KYC (admin auth)' } }
   }
 };
 
@@ -85,6 +101,8 @@ app.use('/api/v1/lab-orders', labOrdersRouter);
 app.use('/api/v1/telemedicine', telemedicineRouter);
 app.use('/api/v1/notifications', notificationsRouter);
 app.use('/api/v1/whatsapp', whatsappRouter);
+app.use('/api/v1/auth', authRouter);
+app.use('/api/v1/admin', adminRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

@@ -1,10 +1,10 @@
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
 
-export type Role = 'patient' | 'doctor';
+export type Role = 'patient' | 'doctor' | 'admin' | 'lab_staff';
 
 export interface TokenPayload {
-  sub: string; // globalPatientId for patients, doctor id for doctors
+  sub: string; // globalPatientId for patients, Doctor/AdminUser/LabStaff id otherwise
   role: Role;
 }
 

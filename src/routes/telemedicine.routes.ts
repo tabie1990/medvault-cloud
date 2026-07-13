@@ -12,8 +12,19 @@ telemedicineRouter.post(
   asyncHandler(async (req: AuthedRequest, res) => {
     const { appointment_id } = req.body;
     if (!appointment_id) return res.status(400).json({ success: false, error: 'appointment_id is required' });
-    const session = await createTelemedicineSession(appointment_id, req.user!.sub);
-    res.status(201).json({ success: true, session });
+    try {
+      const session = await createTelemedicineSession(appointment_id, req.user!.sub);
+      res.status(201).json({ success: true, session });
+    } catch (e: any) {
+      const knownErrors: Record<string, number> = {
+        appointment_not_found: 404,
+        appointment_is_not_a_teleconsult: 400,
+        doctor_not_kyc_verified: 403
+      };
+      const status = knownErrors[e.message];
+      if (status) return res.status(status).json({ success: false, error: e.message });
+      throw e;
+    }
   })
 );
 

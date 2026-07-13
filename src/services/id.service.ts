@@ -28,3 +28,13 @@ export function generateRef(prefix: string): string {
 export function generateSixDigitCode(): string {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
+
+/** Server-generated temporary password for doctor/lab-staff registration —
+ * clients never supply their own password at signup (see ARCHITECTURE.md's
+ * reasoning). Avoids visually ambiguous characters (0/O, 1/l/I). */
+export function generateTempPassword(): string {
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  let out = '';
+  for (let i = 0; i < 12; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}

@@ -27,5 +27,22 @@ export const env = {
   dailyApiKey: process.env.DAILY_API_KEY ?? '',
   dailySubdomain: process.env.DAILY_SUBDOMAIN ?? '',
 
-  expoAccessToken: process.env.EXPO_ACCESS_TOKEN ?? ''
+  expoAccessToken: process.env.EXPO_ACCESS_TOKEN ?? '',
+
+  // Object storage (Backblaze B2, S3-compatible) — KYC documents/selfies.
+  b2Endpoint: process.env.B2_ENDPOINT ?? '',
+  b2Region: process.env.B2_REGION ?? 'us-east-005',
+  b2Bucket: process.env.B2_BUCKET ?? '',
+  b2KeyId: process.env.B2_KEY_ID ?? '',
+  b2ApplicationKey: process.env.B2_APPLICATION_KEY ?? '',
+
+  // Transactional email — Namecheap Private Email SMTP
+  smtpHost: process.env.SMTP_HOST ?? '',
+  smtpPort: Number(process.env.SMTP_PORT ?? 587),
+  smtpUser: process.env.SMTP_USER ?? '',
+  smtpPassword: process.env.SMTP_PASSWORD ?? '',
+  emailFrom: process.env.EMAIL_FROM ?? 'MedVAULT <no-reply@med-vault.com>',
+
+  // Public URL doctors/lab staff use to log in — included in welcome emails
+  webAppUrl: process.env.WEB_APP_URL ?? 'https://cloud.med-vault.com'
 };
