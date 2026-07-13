@@ -21,8 +21,26 @@ function transporter() {
     host: env.smtpHost,
     port: env.smtpPort,
     secure: env.smtpPort === 465,
-    auth: { user: env.smtpUser, pass: env.smtpPassword }
+    auth: { user: env.smtpUser, pass: env.smtpPassword },
+    // Short, explicit timeouts — this runs synchronously in the middle of
+    // an HTTP request (registration), so a slow or silently-stuck mail
+    // server must never be allowed to hang that request indefinitely.
+    // nodemailer's own defaults are much longer than we want here.
+    connectionTimeout: 8000,
+    greetingTimeout: 8000,
+    socketTimeout: 8000
   });
+}
+
+/** Races the actual send against a hard timeout — belt and suspenders on
+ * top of nodemailer's own timeout options above, in case a particular
+ * failure mode (e.g. a connection that opens but never responds at the
+ * TCP level) doesn't trigger those cleanly. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('email_send_timed_out')), ms))
+  ]);
 }
 
 async function send(to: string, subject: string, text: string): Promise<void> {
@@ -31,7 +49,7 @@ async function send(to: string, subject: string, text: string): Promise<void> {
     console.log(`[email:dev-mode] would send to ${to} — ${subject}\n${text}`);
     return;
   }
-  await t.sendMail({ from: env.emailFrom, to, subject, text });
+  await withTimeout(t.sendMail({ from: env.emailFrom, to, subject, text }), 10000);
 }
 
 export async function sendWelcomeCredentialsEmail(

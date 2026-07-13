@@ -22,6 +22,12 @@ import { authRouter } from './routes/auth.routes.js';
 import { adminRouter } from './routes/admin.routes.js';
 
 const app = express();
+// Nginx sits in front of this app (see setup-server.sh) and adds
+// X-Forwarded-For — without this, express-rate-limit can't tell real
+// client IPs apart from Nginx's own, which either breaks rate limiting
+// entirely or throws on every rate-limited request. `1` trusts exactly
+// one hop (the Nginx reverse proxy), not an arbitrary chain.
+app.set('trust proxy', 1);
 app.use(helmet());
 app.use(cors());
 app.use(morgan(env.nodeEnv === 'production' ? 'combined' : 'dev'));
