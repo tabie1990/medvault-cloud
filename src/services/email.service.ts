@@ -22,6 +22,15 @@ function transporter() {
     port: env.smtpPort,
     secure: env.smtpPort === 465,
     auth: { user: env.smtpUser, pass: env.smtpPassword },
+    // Shared cPanel hosting (Namecheap's non-"Private Email" product) puts
+    // many customer domains on one physical server, whose TLS certificate
+    // only covers the server's own hostname — never each customer's
+    // mail.<theirdomain>.com alias. The connection is still fully
+    // encrypted; this only stops requiring the certificate's name to
+    // literally match the hostname we dialed, which would otherwise
+    // reject every connection to this kind of shared mail server. Revisit
+    // if this account ever moves to a host where the cert does match.
+    tls: { rejectUnauthorized: false },
     // Short, explicit timeouts — this runs synchronously in the middle of
     // an HTTP request (registration), so a slow or silently-stuck mail
     // server must never be allowed to hang that request indefinitely.
