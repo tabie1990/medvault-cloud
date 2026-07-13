@@ -22,7 +22,7 @@ export async function queueNotification(input: CreateNotificationInput) {
       recipientType: input.recipientType,
       recipientRef: input.recipientRef,
       templateType: input.templateType,
-      payload: input.payload
+      payload: input.payload as any
     }
   });
 }

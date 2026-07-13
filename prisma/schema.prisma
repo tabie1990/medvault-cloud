@@ -228,8 +228,8 @@ model Doctor {
   id                  String @id @default(uuid()) @db.Uuid
   doctorRef           String @unique
   fullName            String
-  phone               String?
-  email               String?
+  phone               String? @unique
+  email               String? @unique
   passwordHash        String?
   mustChangePassword  Boolean @default(false)
   specialty           String?
@@ -257,8 +257,8 @@ model LabStaff {
   id                 String   @id @default(uuid()) @db.Uuid
   labProviderId      String   @db.Uuid
   fullName           String
-  email              String?
-  phone              String?
+  email              String?  @unique
+  phone              String?  @unique
   passwordHash       String
   mustChangePassword Boolean  @default(true)
   createdAt          DateTime @default(now())

@@ -21,6 +21,15 @@ doctorsRouter.post(
     if (!b.full_name || (!b.phone && !b.email)) {
       return res.status(400).json({ success: false, error: 'full_name and (phone or email) are required' });
     }
+
+    const dupeConditions = [b.email ? { email: b.email } : null, b.phone ? { phone: b.phone } : null].filter(
+      (c): c is { email: string } | { phone: string } => c !== null
+    );
+    const existing = await prisma.doctor.findFirst({ where: { OR: dupeConditions } });
+    if (existing) {
+      return res.status(409).json({ success: false, error: 'a_doctor_with_this_email_or_phone_already_exists' });
+    }
+
     const tempPassword = generateTempPassword();
     const passwordHash = await bcrypt.hash(tempPassword, 12);
     const doctor = await prisma.doctor.create({

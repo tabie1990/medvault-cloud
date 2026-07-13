@@ -205,6 +205,6 @@ export async function handleIncomingWhatsAppMessage(phone: string, text: string)
 
   await prisma.whatsAppContact.update({
     where: { id: contact.id },
-    data: { conversationState: { turns: messages.slice(-MAX_STORED_TURNS) } }
+    data: { conversationState: { turns: messages.slice(-MAX_STORED_TURNS) } as any }
   });
 }

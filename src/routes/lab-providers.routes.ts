@@ -161,6 +161,13 @@ labProvidersRouter.post(
     if (!full_name || (!email && !phone)) {
       return res.status(400).json({ success: false, error: 'full_name and (email or phone) are required' });
     }
+    const dupeConditions = [email ? { email } : null, phone ? { phone } : null].filter(
+      (c): c is { email: string } | { phone: string } => c !== null
+    );
+    const existingStaff = await prisma.labStaff.findFirst({ where: { OR: dupeConditions } });
+    if (existingStaff) {
+      return res.status(409).json({ success: false, error: 'lab_staff_with_this_email_or_phone_already_exists' });
+    }
     const tempPassword = generateTempPassword();
     const passwordHash = await bcrypt.hash(tempPassword, 12);
     const staff = await prisma.labStaff.create({

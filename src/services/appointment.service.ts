@@ -32,7 +32,7 @@ export async function createAppointment(input: CreateAppointmentInput) {
       source: input.source,
       channel: input.channel,
       notes: input.notes,
-      payload: input.raw ?? {}
+      payload: (input.raw ?? {}) as any
     }
   });
   return appointment;
