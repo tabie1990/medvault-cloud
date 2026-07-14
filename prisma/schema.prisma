@@ -275,6 +275,13 @@ model Doctor {
   momoNumber          String?
   momoNetwork         String? // 'MTN' | 'Orange'
   teleconsultFee      Decimal? @default(0)
+  // Teleconsult scheduling — deliberately independent of any hospital's
+  // own physical booking system (the HMS already handles that separately
+  // for in-person visits at a fixed 25-minute default). A doctor's
+  // willingness to take remote teleconsults doesn't map to their physical
+  // hours, so this is modeled as its own thing, not synced from anywhere.
+  teleconsultSlotMinutes Int @default(15) // configurable per doctor, not platform-fixed
+  consultationTypes      Json? @default("[]") // e.g. ["General Consultation","Follow-up","Pediatric"]
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
   appointments        Appointment[]
@@ -282,6 +289,21 @@ model Doctor {
   labOrdersReferred   LabOrder[]
   telemedicineSessions TelemedicineSession[]
   prescriptions       Prescription[]
+  availability        DoctorAvailability[]
+}
+
+// A doctor's recurring weekly teleconsult availability — e.g. "Monday
+// 08:00-12:00 and 14:00-17:00". Slots are generated dynamically from this
+// (see availability.service.ts) rather than pre-materialized as rows, so
+// there's nothing to keep in sync if a doctor changes their hours.
+model DoctorAvailability {
+  id         String   @id @default(uuid()) @db.Uuid
+  doctorId   String   @db.Uuid
+  dayOfWeek  Int      // 0=Sunday .. 6=Saturday
+  startTime  String   // "08:00", 24-hour, plain wall-clock (single-timezone deployment)
+  endTime    String   // "12:00"
+  createdAt  DateTime @default(now())
+  doctor     Doctor   @relation(fields: [doctorId], references: [id])
 }
 
 model LabStaff {
