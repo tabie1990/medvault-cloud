@@ -20,6 +20,18 @@ export async function createTelemedicineSession(appointmentId: string, doctorId?
   const existing = await prisma.telemedicineSession.findUnique({ where: { appointmentId } });
   if (existing) return existing;
 
+  // The appointment itself may never have had a doctor assigned (a
+  // cloud-originated booking often doesn't specify one up front) — the
+  // doctor claiming the session here becomes the appointment's doctor of
+  // record. This matters beyond just this session: split-payout looks up
+  // the payout target via appointment.doctor, not session.doctor, so
+  // without this backfill a doctor with a correctly-configured MoMo
+  // number would still fail payout with "no momo number found" — found
+  // via exactly that failure during Block 3 testing.
+  if (effectiveDoctorId && !appointment.doctorId) {
+    await prisma.appointment.update({ where: { id: appointmentId }, data: { doctorId: effectiveDoctorId } });
+  }
+
   // Deliberately no roomUrl here — see createRoomForSession below. The
   // booking itself (this session row) can exist before payment; the
   // actual video room cannot, matching the HMS's own tested product
