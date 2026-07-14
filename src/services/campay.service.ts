@@ -19,7 +19,7 @@ function assertConfigured(): void {
  * producing a bare "error code: 502" with no useful detail at all. */
 async function campayFetch(url: string, options: RequestInit): Promise<Response> {
   try {
-    return await fetch(url, { ...options, signal: AbortSignal.timeout(20000) });
+    return await fetch(url, { ...options, signal: AbortSignal.timeout(10000) });
   } catch (e: any) {
     if (e.name === 'TimeoutError' || e.name === 'AbortError') {
       throw new Error('campay_request_timed_out');
