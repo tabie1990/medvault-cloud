@@ -89,7 +89,6 @@ export async function splitPayout(appointmentId: string) {
   const providerMomo = appointment.doctor?.momoNumber ?? appointment.hospital?.hospitalMomoNumber;
   const providerNetwork = appointment.doctor?.momoNetwork ?? appointment.hospital?.hospitalMomoNetwork ?? 'MTN';
 
-  if (!env.medvaultMomoNumber) throw new Error('medvault_momo_number_not_configured');
   if (!providerMomo) throw new Error('no_momo_number_found_for_doctor_or_hospital');
 
   const split = await prisma.paymentSplit.create({
@@ -99,7 +98,7 @@ export async function splitPayout(appointmentId: string) {
       platformFeePct,
       platformAmount,
       providerAmount,
-      medvaultMomo: env.medvaultMomoNumber,
+      medvaultMomo: env.medvaultMomoNumber || null,
       providerMomo,
       providerNetwork,
       patientPaymentRef: appointment.paymentReference
@@ -107,12 +106,12 @@ export async function splitPayout(appointmentId: string) {
   });
 
   try {
-    const platformRes = await campay.transfer(
-      env.medvaultMomoNumber,
-      platformAmount,
-      `MedVAULT platform fee — ${appointment.appointmentRef}`,
-      `mv-platform-${appointment.appointmentRef}`
-    );
+    // The collection already deposited the full amount into MedVAULT's own
+    // Campay merchant wallet — the platform's cut is simply what's left
+    // over once the provider's share moves out. No separate transfer to
+    // MedVAULT's own number is needed; that would be paying ourselves
+    // money we already have, and was an unnecessary second network call
+    // (and a second point of failure) in the original version of this.
     const providerRes = await campay.transfer(
       providerMomo,
       providerAmount,
@@ -120,20 +119,17 @@ export async function splitPayout(appointmentId: string) {
       `mv-provider-${appointment.appointmentRef}`
     );
 
-    const bothOk = platformRes.ok && providerRes.ok;
     await prisma.paymentSplit.update({
       where: { id: split.id },
       data: {
-        platformPayoutRef: platformRes.data.reference ?? null,
         providerPayoutRef: providerRes.data.reference ?? null,
-        status: bothOk ? 'completed' : 'failed',
-        completedAt: bothOk ? new Date() : null
+        status: providerRes.ok ? 'completed' : 'failed',
+        completedAt: providerRes.ok ? new Date() : null
       }
     });
 
-    if (!bothOk) {
-      const err: any = new Error('one_or_more_payout_transfers_failed');
-      err.platform = platformRes.data;
+    if (!providerRes.ok) {
+      const err: any = new Error('provider_payout_transfer_failed');
       err.provider = providerRes.data;
       throw err;
     }
@@ -141,7 +137,6 @@ export async function splitPayout(appointmentId: string) {
     return {
       platformAmount,
       providerAmount,
-      platformRef: platformRes.data.reference,
       providerRef: providerRes.data.reference
     };
   } catch (err) {

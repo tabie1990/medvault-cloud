@@ -51,9 +51,8 @@ const knownPaymentErrors: Record<string, number> = {
   campay_returned_non_json_response: 502,
   campay_request_timed_out: 504,
   patient_has_not_paid_yet: 402,
-  medvault_momo_number_not_configured: 400,
   no_momo_number_found_for_doctor_or_hospital: 400,
-  one_or_more_payout_transfers_failed: 500
+  provider_payout_transfer_failed: 500
 };
 
 function handlePaymentError(e: any, res: any) {
