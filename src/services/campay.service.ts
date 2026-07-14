@@ -12,6 +12,24 @@ function assertConfigured(): void {
   }
 }
 
+/** Campay is expected to always return JSON, but sandbox environments
+ * (and real outages) sometimes return an HTML error/maintenance page
+ * instead — found via the /transfer/ endpoint during Block 3 testing.
+ * `res.json()` on an HTML body throws an opaque "Unexpected token '<'"
+ * SyntaxError that gives no hint what actually happened. This makes that
+ * failure mode explicit and diagnosable instead. */
+async function safeJson(res: Response): Promise<any> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    const err: any = new Error('campay_returned_non_json_response');
+    err.status = res.status;
+    err.rawBody = text.slice(0, 500); // enough to see what actually came back, not the whole page
+    throw err;
+  }
+}
+
 /** Normalizes and validates a Cameroon MoMo number to Campay's expected
  * "237XXXXXXXXX" (12-digit, no plus sign) format. */
 export function normalizeCameroonPhone(phone: string): string {
@@ -41,7 +59,7 @@ export async function collect(
       external_reference: externalReference
     })
   });
-  const data = await res.json();
+  const data = await safeJson(res);
   if (!res.ok) {
     const err: any = new Error(data.message || data.detail || 'campay_collect_failed');
     err.status = res.status;
@@ -57,7 +75,7 @@ export async function checkTransactionStatus(reference: string): Promise<{ statu
   const res = await fetch(`${env.campayBaseUrl}transaction/${reference}/`, {
     headers: { Authorization: `Token ${env.campayToken}` }
   });
-  const data = await res.json();
+  const data = await safeJson(res);
   if (!res.ok) {
     const err: any = new Error(data.message || 'campay_status_check_failed');
     err.status = res.status;
@@ -85,5 +103,5 @@ export async function transfer(
       external_reference: externalReference
     })
   });
-  return { ok: res.ok, data: await res.json() };
+  return { ok: res.ok, data: await safeJson(res) };
 }

@@ -48,6 +48,7 @@ const knownPaymentErrors: Record<string, number> = {
   appointment_not_found: 404,
   invalid_cameroon_phone: 400,
   campay_not_configured: 400,
+  campay_returned_non_json_response: 502,
   patient_has_not_paid_yet: 402,
   medvault_momo_number_not_configured: 400,
   no_momo_number_found_for_doctor_or_hospital: 400,
@@ -56,7 +57,12 @@ const knownPaymentErrors: Record<string, number> = {
 
 function handlePaymentError(e: any, res: any) {
   const status = knownPaymentErrors[e.message] ?? e.status ?? 500;
-  res.status(status).json({ success: false, error: e.message, ...(e.raw ? { raw: e.raw } : {}) });
+  res.status(status).json({
+    success: false,
+    error: e.message,
+    ...(e.raw ? { raw: e.raw } : {}),
+    ...(e.rawBody ? { raw_body_preview: e.rawBody } : {})
+  });
 }
 
 appointmentsRouter.post(
