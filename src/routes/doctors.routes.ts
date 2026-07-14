@@ -6,6 +6,7 @@ import { generateRef, generateTempPassword } from '../services/id.service.js';
 import { signToken } from '../services/jwt.service.js';
 import { sendWelcomeCredentialsEmail } from '../services/email.service.js';
 import { getUploadUrl } from '../services/storage.service.js';
+import { setAvailability, getAvailability, getSlotsForNextDays } from '../services/availability.service.js';
 import { requireAuth, type AuthedRequest } from '../middleware/auth.middleware.js';
 import { asyncHandler } from '../middleware/error.middleware.js';
 import { env } from '../config/env.js';
@@ -123,17 +124,71 @@ doctorsRouter.patch(
   '/me',
   requireAuth('doctor'),
   asyncHandler(async (req: AuthedRequest, res) => {
-    const { momo_number, momo_network, teleconsult_fee } = req.body;
+    const { momo_number, momo_network, teleconsult_fee, teleconsult_slot_minutes, consultation_types } = req.body;
+    if (teleconsult_slot_minutes !== undefined && (teleconsult_slot_minutes < 5 || teleconsult_slot_minutes > 60)) {
+      return res.status(400).json({ success: false, error: 'teleconsult_slot_minutes must be between 5 and 60' });
+    }
     const doctor = await prisma.doctor.update({
       where: { id: req.user!.sub },
       data: {
         ...(momo_number !== undefined ? { momoNumber: momo_number } : {}),
         ...(momo_network !== undefined ? { momoNetwork: momo_network } : {}),
-        ...(teleconsult_fee !== undefined ? { teleconsultFee: Number(teleconsult_fee) } : {})
+        ...(teleconsult_fee !== undefined ? { teleconsultFee: Number(teleconsult_fee) } : {}),
+        ...(teleconsult_slot_minutes !== undefined ? { teleconsultSlotMinutes: Number(teleconsult_slot_minutes) } : {}),
+        ...(consultation_types !== undefined ? { consultationTypes: consultation_types } : {})
       }
     });
     const { passwordHash: _omit, ...safeDoctor } = doctor;
     res.json({ success: true, doctor: safeDoctor });
+  })
+);
+
+// ── Teleconsult availability — deliberately independent of any hospital's
+// own physical booking system. See availability.service.ts for why.
+doctorsRouter.put(
+  '/me/availability',
+  requireAuth('doctor'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const { windows } = req.body;
+    if (!Array.isArray(windows)) {
+      return res.status(400).json({ success: false, error: 'windows[] is required, each {day_of_week, start_time, end_time}' });
+    }
+    try {
+      const availability = await setAvailability(
+        req.user!.sub,
+        windows.map((w: any) => ({ dayOfWeek: w.day_of_week, startTime: w.start_time, endTime: w.end_time }))
+      );
+      res.json({ success: true, availability });
+    } catch (e: any) {
+      res.status(400).json({ success: false, error: e.message });
+    }
+  })
+);
+
+doctorsRouter.get(
+  '/me/availability',
+  requireAuth('doctor'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const availability = await getAvailability(req.user!.sub);
+    res.json({ success: true, availability });
+  })
+);
+
+// Public — this is what a patient-facing booking screen (web portal,
+// WhatsApp agent) actually calls to show real, bookable slots.
+doctorsRouter.get(
+  '/:id/availability/slots',
+  asyncHandler(async (req, res) => {
+    const days = Math.min(Number(req.query.days ?? 7), 30);
+    try {
+      const slots = await getSlotsForNextDays(req.params.id, days);
+      res.json({ success: true, slots });
+    } catch (e: any) {
+      if (e.message === 'doctor_not_found') {
+        return res.status(404).json({ success: false, error: 'doctor_not_found' });
+      }
+      throw e;
+    }
   })
 );
 
