@@ -13,19 +13,26 @@ appointmentsRouter.post(
     if (!b.appointment_type || !b.source) {
       return res.status(400).json({ success: false, error: 'appointment_type and source are required' });
     }
-    const appointment = await createAppointment({
-      globalPatientId: b.global_patient_id,
-      hospitalId: b.hospital_id,
-      doctorId: b.doctor_id,
-      appointmentType: b.appointment_type,
-      requestedDate: b.requested_date,
-      requestedTime: b.requested_time,
-      source: b.source,
-      channel: b.channel,
-      notes: b.notes,
-      raw: b
-    });
-    res.status(201).json({ success: true, appointment });
+    try {
+      const appointment = await createAppointment({
+        globalPatientId: b.global_patient_id,
+        hospitalId: b.hospital_id,
+        doctorId: b.doctor_id,
+        appointmentType: b.appointment_type,
+        requestedDate: b.requested_date,
+        requestedTime: b.requested_time,
+        source: b.source,
+        channel: b.channel,
+        notes: b.notes,
+        raw: b
+      });
+      res.status(201).json({ success: true, appointment });
+    } catch (e: any) {
+      if (e.message === 'hospital_not_found') {
+        return res.status(404).json({ success: false, error: 'hospital_not_found' });
+      }
+      throw e;
+    }
   })
 );
 

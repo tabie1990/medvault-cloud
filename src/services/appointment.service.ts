@@ -20,6 +20,11 @@ export interface CreateAppointmentInput {
  * "create an appointment" regardless of which channel it came from.
  */
 export async function createAppointment(input: CreateAppointmentInput) {
+  if (input.hospitalId) {
+    const hospital = await prisma.hospital.findUnique({ where: { hospitalId: input.hospitalId } });
+    if (!hospital) throw new Error('hospital_not_found');
+  }
+
   const appointment = await prisma.appointment.create({
     data: {
       appointmentRef: generateAppointmentRef(),
