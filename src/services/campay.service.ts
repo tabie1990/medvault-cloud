@@ -12,6 +12,22 @@ function assertConfigured(): void {
   }
 }
 
+/** Wraps fetch with the shared timeout handling — converts the raw,
+ * unhelpful AbortError/DOMException a timeout produces into a clean,
+ * named error. Found the need for this via a real Campay /transfer/ call
+ * that hung long enough to hit Cloudflare's own origin timeout first,
+ * producing a bare "error code: 502" with no useful detail at all. */
+async function campayFetch(url: string, options: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, { ...options, signal: AbortSignal.timeout(20000) });
+  } catch (e: any) {
+    if (e.name === 'TimeoutError' || e.name === 'AbortError') {
+      throw new Error('campay_request_timed_out');
+    }
+    throw e;
+  }
+}
+
 /** Campay is expected to always return JSON, but sandbox environments
  * (and real outages) sometimes return an HTML error/maintenance page
  * instead — found via the /transfer/ endpoint during Block 3 testing.
@@ -48,7 +64,7 @@ export async function collect(
   externalReference: string
 ): Promise<{ reference: string; ussd_code?: string; operator?: string }> {
   assertConfigured();
-  const res = await fetch(`${env.campayBaseUrl}collect/`, {
+  const res = await campayFetch(`${env.campayBaseUrl}collect/`, {
     method: 'POST',
     headers: { Authorization: `Token ${env.campayToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -72,7 +88,7 @@ export async function collect(
 /** Polls Campay for a transaction's current status. */
 export async function checkTransactionStatus(reference: string): Promise<{ status: string; raw: any }> {
   assertConfigured();
-  const res = await fetch(`${env.campayBaseUrl}transaction/${reference}/`, {
+  const res = await campayFetch(`${env.campayBaseUrl}transaction/${reference}/`, {
     headers: { Authorization: `Token ${env.campayToken}` }
   });
   const data = await safeJson(res);
@@ -92,7 +108,7 @@ export async function transfer(
   externalReference: string
 ): Promise<{ ok: boolean; data: any }> {
   assertConfigured();
-  const res = await fetch(`${env.campayBaseUrl}transfer/`, {
+  const res = await campayFetch(`${env.campayBaseUrl}transfer/`, {
     method: 'POST',
     headers: { Authorization: `Token ${env.campayToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
