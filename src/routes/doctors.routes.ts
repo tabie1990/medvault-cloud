@@ -116,6 +116,27 @@ doctorsRouter.get(
   })
 );
 
+// Lets a doctor set where their share of a split payout should go, and
+// what they charge for a teleconsult — both required before request-payment
+// and split-payout in payment.service.ts can actually work for them.
+doctorsRouter.patch(
+  '/me',
+  requireAuth('doctor'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const { momo_number, momo_network, teleconsult_fee } = req.body;
+    const doctor = await prisma.doctor.update({
+      where: { id: req.user!.sub },
+      data: {
+        ...(momo_number !== undefined ? { momoNumber: momo_number } : {}),
+        ...(momo_network !== undefined ? { momoNetwork: momo_network } : {}),
+        ...(teleconsult_fee !== undefined ? { teleconsultFee: Number(teleconsult_fee) } : {})
+      }
+    });
+    const { passwordHash: _omit, ...safeDoctor } = doctor;
+    res.json({ success: true, doctor: safeDoctor });
+  })
+);
+
 // Presigned upload URL for KYC documents — the client uploads directly to
 // object storage, then submits the resulting keys via POST /kyc below.
 doctorsRouter.post(

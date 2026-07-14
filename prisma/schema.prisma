@@ -56,6 +56,18 @@ enum VerificationStatus {
   suspended
 }
 
+enum PaymentStatus {
+  unpaid
+  pending
+  paid
+}
+
+enum PaymentSplitStatus {
+  pending
+  completed
+  failed
+}
+
 enum LabServiceType {
   home_visit
   on_site
@@ -108,6 +120,8 @@ model Hospital {
   region        String?
   city          String?
   status        HospitalStatus @default(active)
+  hospitalMomoNumber  String? // fallback payout target when the doctor has none set
+  hospitalMomoNetwork String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   installations HospitalInstallation[]
@@ -151,6 +165,7 @@ model GlobalPatient {
   labOrders          LabOrder[]
   telemedicineSessions TelemedicineSession[]
   whatsAppContacts   WhatsAppContact[]
+  prescriptions      Prescription[]
 }
 
 model PatientIdentityMap {
@@ -208,6 +223,15 @@ model Appointment {
   channel           String?
   notes             String?
   payload           Json?
+  // Payment — mirrors the HMS's own teleconsult payment fields exactly,
+  // since that implementation is already tested end-to-end with a real
+  // phone. Patient pays the full amount via Campay; splitting it between
+  // MedVAULT's platform fee and the doctor/hospital happens separately
+  // (see PaymentSplit) once this is 'paid'.
+  paymentStatus     PaymentStatus @default(unpaid)
+  paymentReference  String? // Campay's transaction reference
+  paymentAmount     Decimal?
+  paymentPhone      String? // the payer's MoMo number, not necessarily the patient's own
   syncedToHospitalAt DateTime? // NULL = not yet fanned out to the hospital's sync queue.
                                // Dedicated column, not a JSON payload marker — a JSON-path
                                // "equals: true" filter silently excludes rows where the key
@@ -221,6 +245,8 @@ model Appointment {
   hospital          Hospital? @relation(fields: [hospitalId], references: [hospitalId])
   doctor            Doctor? @relation(fields: [doctorId], references: [id])
   telemedicineSession TelemedicineSession?
+  paymentSplits     PaymentSplit[]
+  prescriptions     Prescription[]
   referredLabOrders LabOrder[]
 }
 
@@ -245,12 +271,17 @@ model Doctor {
   kycReviewedAt             DateTime?
   kycReviewedBy             String?  // AdminUser.id
   kycRejectionReason        String?
+  // Where their share of a split payout actually gets sent — see PaymentSplit.
+  momoNumber          String?
+  momoNetwork         String? // 'MTN' | 'Orange'
+  teleconsultFee      Decimal? @default(0)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
   appointments        Appointment[]
   labProviders        LabProvider[]
   labOrdersReferred   LabOrder[]
   telemedicineSessions TelemedicineSession[]
+  prescriptions       Prescription[]
 }
 
 model LabStaff {
@@ -391,6 +422,53 @@ model TelemedicineSession {
   createdAt       DateTime @default(now())
   appointment     Appointment    @relation(fields: [appointmentId], references: [id])
   doctor          Doctor?        @relation(fields: [doctorId], references: [id])
+  globalPatient   GlobalPatient? @relation(fields: [globalPatientId], references: [globalPatientId])
+}
+
+// Records each split payment transaction: patient pays the full amount via
+// Campay, we then disburse the platform fee to MedVAULT and the remainder
+// to the doctor (or hospital, if the doctor has no MoMo of their own) —
+// two separate Campay transfer calls. Mirrors the HMS's own
+// teleconsult_payment_splits table field-for-field.
+model PaymentSplit {
+  id                 String   @id @default(uuid()) @db.Uuid
+  appointmentId      String   @db.Uuid
+  totalAmount        Decimal
+  platformFeePct     Decimal  @default(10)
+  platformAmount     Decimal
+  providerAmount     Decimal
+  medvaultMomo       String?
+  providerMomo       String?
+  providerNetwork    String?
+  patientPaymentRef  String?
+  platformPayoutRef  String?
+  providerPayoutRef  String?
+  status             PaymentSplitStatus @default(pending)
+  createdAt          DateTime @default(now())
+  completedAt        DateTime?
+  appointment        Appointment @relation(fields: [appointmentId], references: [id])
+}
+
+// Mirrors the HMS's teleconsult_prescriptions table — issued during or
+// after a teleconsult, delivered to the patient, and deliberately NOT
+// routed through any hospital pharmacy (that's the whole point of a
+// teleconsult prescription: the patient fills it wherever is convenient).
+model Prescription {
+  id              String   @id @default(uuid()) @db.Uuid
+  prescriptionRef String   @unique
+  appointmentId   String   @db.Uuid
+  globalPatientId String?
+  doctorId        String   @db.Uuid
+  symptoms        String?
+  diagnosis       String?
+  notes           String?
+  items           Json     @default("[]") // [{type, name, dose, frequency, duration, notes}]
+                                           // type: 'medication' | 'lab_request' | 'imaging_request'
+  status          String   @default("issued") // issued | sent_to_patient | completed
+  sentAt          DateTime?
+  createdAt       DateTime @default(now())
+  appointment     Appointment    @relation(fields: [appointmentId], references: [id])
+  doctor          Doctor         @relation(fields: [doctorId], references: [id])
   globalPatient   GlobalPatient? @relation(fields: [globalPatientId], references: [globalPatientId])
 }
 

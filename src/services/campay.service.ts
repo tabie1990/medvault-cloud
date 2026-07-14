@@ -1,0 +1,89 @@
+import { env } from '../config/env.js';
+
+/**
+ * Campay integration — ported directly from the HMS's own implementation,
+ * which is already tested end-to-end with a real phone. Deliberately not
+ * redesigned; same request shapes, same field names, same validation.
+ */
+
+function assertConfigured(): void {
+  if (!env.campayToken) {
+    throw new Error('campay_not_configured');
+  }
+}
+
+/** Normalizes and validates a Cameroon MoMo number to Campay's expected
+ * "237XXXXXXXXX" (12-digit, no plus sign) format. */
+export function normalizeCameroonPhone(phone: string): string {
+  const cleaned = phone.toString().replace(/[^0-9]/g, '');
+  if (!cleaned.startsWith('237') || cleaned.length !== 12) {
+    throw new Error('invalid_cameroon_phone');
+  }
+  return cleaned;
+}
+
+/** Requests a collection (the patient pays MedVAULT via Campay's USSD prompt). */
+export async function collect(
+  phone: string,
+  amount: number,
+  description: string,
+  externalReference: string
+): Promise<{ reference: string; ussd_code?: string; operator?: string }> {
+  assertConfigured();
+  const res = await fetch(`${env.campayBaseUrl}collect/`, {
+    method: 'POST',
+    headers: { Authorization: `Token ${env.campayToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      amount: Math.round(amount).toString(),
+      currency: 'XAF',
+      from: phone,
+      description,
+      external_reference: externalReference
+    })
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    const err: any = new Error(data.message || data.detail || 'campay_collect_failed');
+    err.status = res.status;
+    err.raw = data;
+    throw err;
+  }
+  return data;
+}
+
+/** Polls Campay for a transaction's current status. */
+export async function checkTransactionStatus(reference: string): Promise<{ status: string; raw: any }> {
+  assertConfigured();
+  const res = await fetch(`${env.campayBaseUrl}transaction/${reference}/`, {
+    headers: { Authorization: `Token ${env.campayToken}` }
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    const err: any = new Error(data.message || 'campay_status_check_failed');
+    err.status = res.status;
+    throw err;
+  }
+  return { status: data.status, raw: data };
+}
+
+/** Disburses funds out to a MoMo number (platform fee or provider payout). */
+export async function transfer(
+  toPhone: string,
+  amount: number,
+  description: string,
+  externalReference: string
+): Promise<{ ok: boolean; data: any }> {
+  assertConfigured();
+  const res = await fetch(`${env.campayBaseUrl}transfer/`, {
+    method: 'POST',
+    headers: { Authorization: `Token ${env.campayToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      to: toPhone,
+      amount: Math.round(amount).toString(),
+      currency: 'XAF',
+      description,
+      external_reference: externalReference
+    })
+  });
+  return { ok: res.ok, data: await res.json() };
+}

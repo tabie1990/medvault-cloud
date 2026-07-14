@@ -44,5 +44,14 @@ export const env = {
   emailFrom: process.env.EMAIL_FROM ?? 'MedVAULT <no-reply@med-vault.com>',
 
   // Public URL doctors/lab staff use to log in — included in welcome emails
-  webAppUrl: process.env.WEB_APP_URL ?? 'https://cloud.med-vault.com'
+  webAppUrl: process.env.WEB_APP_URL ?? 'https://cloud.med-vault.com',
+
+  // Campay — same aggregator the HMS's own teleconsult payment flow uses
+  // (that implementation is already tested end-to-end with a real phone).
+  // Platform-wide here, not per-hospital, since the cloud has exactly one
+  // Campay account, unlike each individual HMS installation.
+  campayToken: process.env.CAMPAY_TOKEN ?? '',
+  campayBaseUrl: process.env.CAMPAY_BASE_URL ?? 'https://demo.campay.net/api/',
+  medvaultMomoNumber: process.env.MEDVAULT_MOMO_NUMBER ?? '',
+  platformFeePct: Number(process.env.PLATFORM_FEE_PCT ?? 10)
 };

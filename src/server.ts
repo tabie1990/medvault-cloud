@@ -20,6 +20,7 @@ import { notificationsRouter } from './routes/notifications.routes.js';
 import { whatsappRouter } from './routes/whatsapp.routes.js';
 import { authRouter } from './routes/auth.routes.js';
 import { adminRouter } from './routes/admin.routes.js';
+import { prescriptionsRouter } from './routes/prescriptions.routes.js';
 
 const app = express();
 // Nginx sits in front of this app (see setup-server.sh) and adds
@@ -109,6 +110,7 @@ app.use('/api/v1/notifications', notificationsRouter);
 app.use('/api/v1/whatsapp', whatsappRouter);
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/admin', adminRouter);
+app.use('/api/v1/prescriptions', prescriptionsRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { prisma } from '../db/prisma.js';
-import { createTelemedicineSession, updateSessionStatus } from '../services/telemedicine.service.js';
+import { createTelemedicineSession, updateSessionStatus, createRoomForSession } from '../services/telemedicine.service.js';
 import { requireAuth, type AuthedRequest } from '../middleware/auth.middleware.js';
 import { asyncHandler } from '../middleware/error.middleware.js';
 
@@ -38,6 +38,28 @@ telemedicineRouter.patch(
     }
     const session = await updateSessionStatus(req.params.id, action);
     res.json({ success: true, session });
+  })
+);
+
+// Room creation is deliberately separate from session creation — payment
+// gates the room, not the booking, matching the HMS's own tested product
+// decision. Idempotent: calling this again just returns the existing room.
+telemedicineRouter.post(
+  '/sessions/:id/room',
+  requireAuth('doctor'),
+  asyncHandler(async (req, res) => {
+    try {
+      const session = await createRoomForSession(req.params.id);
+      res.json({ success: true, session });
+    } catch (e: any) {
+      const knownErrors: Record<string, number> = {
+        telemedicine_session_not_found: 404,
+        appointment_not_paid_yet: 402
+      };
+      const status = knownErrors[e.message];
+      if (status) return res.status(status).json({ success: false, error: e.message });
+      throw e;
+    }
   })
 );
 
