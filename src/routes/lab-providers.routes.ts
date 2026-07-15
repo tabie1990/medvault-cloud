@@ -34,6 +34,30 @@ labProvidersRouter.post(
   })
 );
 
+// Owner doctor sets where this lab's share of a payout should go —
+// required before split-payout in lab-payment.service.ts can work.
+labProvidersRouter.patch(
+  '/:id',
+  requireAuth('doctor'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const provider = await prisma.labProvider.findUnique({ where: { id: req.params.id } });
+    if (!provider) return res.status(404).json({ success: false, error: 'lab_provider_not_found' });
+    if (provider.ownerDoctorId !== req.user!.sub) {
+      return res.status(403).json({ success: false, error: 'not_the_owner_of_this_lab' });
+    }
+    const { momo_number, momo_network, home_service_fee } = req.body;
+    const updated = await prisma.labProvider.update({
+      where: { id: req.params.id },
+      data: {
+        ...(momo_number !== undefined ? { momoNumber: momo_number } : {}),
+        ...(momo_network !== undefined ? { momoNetwork: momo_network } : {}),
+        ...(home_service_fee !== undefined ? { homeServiceFee: Number(home_service_fee) } : {})
+      }
+    });
+    res.json({ success: true, lab_provider: updated });
+  })
+);
+
 labProvidersRouter.post(
   '/:id/services',
   requireAuth('doctor'),

@@ -6,10 +6,27 @@ import {
   updateLabOrderStatus,
   listPendingLabOrdersForHospital
 } from '../services/lab-order.service.js';
+import { requestLabPayment, checkLabPaymentStatus, markLabOrderPaid, splitLabPayout } from '../services/lab-payment.service.js';
 import { requireAuth, type AuthedRequest } from '../middleware/auth.middleware.js';
 import { asyncHandler } from '../middleware/error.middleware.js';
 
 export const labOrdersRouter = Router();
+
+// Shared by PATCH and the payment endpoints below — a doctor may only act
+// on a lab order they referred or whose lab they own; lab staff only on
+// orders belonging to their own lab. Extracted here rather than
+// duplicated three more times, given how many places in this codebase
+// have already been bitten by exactly that kind of drift.
+async function isAuthorizedForLabOrder(order: any, user: { sub: string; role: string }): Promise<boolean> {
+  if (user.role === 'doctor') {
+    return order.referringDoctorId === user.sub || order.labProvider.ownerDoctorId === user.sub;
+  }
+  if (user.role === 'lab_staff') {
+    const staff = await prisma.labStaff.findUnique({ where: { id: user.sub } });
+    return Boolean(staff && staff.labProviderId === order.labProviderId);
+  }
+  return false;
+}
 
 labOrdersRouter.post(
   '/',
@@ -55,7 +72,7 @@ labOrdersRouter.patch(
   '/:id',
   requireAuth('doctor', 'lab_staff'),
   asyncHandler(async (req: AuthedRequest, res) => {
-    const { status, result_payload, payment_status } = req.body;
+    const { status, result_payload } = req.body;
     if (!status) return res.status(400).json({ success: false, error: 'status is required' });
 
     const order = await getLabOrder(req.params.id);
@@ -64,21 +81,13 @@ labOrdersRouter.patch(
     // The actual fix: a doctor can only touch a lab order they referred or
     // whose lab they own — not any arbitrary doctor. Lab staff can only
     // touch orders belonging to their own lab.
-    let allowed = false;
-    if (req.user!.role === 'doctor') {
-      allowed = order.referringDoctorId === req.user!.sub || order.labProvider.ownerDoctorId === req.user!.sub;
-    } else if (req.user!.role === 'lab_staff') {
-      const staff = await prisma.labStaff.findUnique({ where: { id: req.user!.sub } });
-      allowed = Boolean(staff && staff.labProviderId === order.labProviderId);
-    }
-    if (!allowed) {
+    if (!(await isAuthorizedForLabOrder(order, req.user!))) {
       return res.status(403).json({ success: false, error: 'not_authorized_for_this_lab_order' });
     }
 
     const updated = await updateLabOrderStatus(req.params.id, {
       status,
-      resultPayload: result_payload,
-      paymentStatus: payment_status
+      resultPayload: result_payload
     });
     res.json({ success: true, lab_order: updated });
   })
@@ -89,5 +98,95 @@ labOrdersRouter.get(
   asyncHandler(async (req, res) => {
     const orders = await listPendingLabOrdersForHospital(req.params.hospitalId);
     res.json({ success: true, lab_orders: orders });
+  })
+);
+
+const knownLabPaymentErrors: Record<string, number> = {
+  lab_order_not_found: 404,
+  invalid_cameroon_phone: 400,
+  campay_not_configured: 400,
+  campay_returned_non_json_response: 502,
+  campay_request_timed_out: 504,
+  patient_has_not_paid_yet: 402,
+  no_momo_number_found_for_lab_or_owner: 400,
+  provider_payout_transfer_failed: 500
+};
+
+function handleLabPaymentError(e: any, res: any) {
+  const status = knownLabPaymentErrors[e.message] ?? e.status ?? 500;
+  res.status(status).json({
+    success: false,
+    error: e.message,
+    ...(e.raw ? { raw: e.raw } : {}),
+    ...(e.rawBody ? { raw_body_preview: e.rawBody } : {})
+  });
+}
+
+async function requireLabOrderAuth(req: AuthedRequest, res: any): Promise<any> {
+  const order = await getLabOrder(req.params.id);
+  if (!order) {
+    res.status(404).json({ success: false, error: 'lab_order_not_found' });
+    return null;
+  }
+  if (!(await isAuthorizedForLabOrder(order, req.user!))) {
+    res.status(403).json({ success: false, error: 'not_authorized_for_this_lab_order' });
+    return null;
+  }
+  return order;
+}
+
+labOrdersRouter.post(
+  '/:id/request-payment',
+  requireAuth('doctor', 'lab_staff'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    if (!(await requireLabOrderAuth(req, res))) return;
+    const { phone, amount } = req.body;
+    if (!phone || !amount) return res.status(400).json({ success: false, error: 'phone and amount are both required' });
+    try {
+      const data = await requestLabPayment(req.params.id, phone, Number(amount));
+      res.json({ success: true, ...data });
+    } catch (e: any) {
+      handleLabPaymentError(e, res);
+    }
+  })
+);
+
+labOrdersRouter.get(
+  '/:id/payment-status',
+  requireAuth('doctor', 'lab_staff'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    if (!(await requireLabOrderAuth(req, res))) return;
+    try {
+      const data = await checkLabPaymentStatus(req.params.id);
+      res.json({ success: true, ...data });
+    } catch (e: any) {
+      handleLabPaymentError(e, res);
+    }
+  })
+);
+
+labOrdersRouter.post(
+  '/:id/mark-paid',
+  requireAuth('doctor', 'lab_staff'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    if (!(await requireLabOrderAuth(req, res))) return;
+    const { amount } = req.body;
+    if (!amount) return res.status(400).json({ success: false, error: 'amount is required' });
+    const order = await markLabOrderPaid(req.params.id, Number(amount));
+    res.json({ success: true, lab_order: order });
+  })
+);
+
+labOrdersRouter.post(
+  '/:id/split-payout',
+  requireAuth('doctor', 'lab_staff'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    if (!(await requireLabOrderAuth(req, res))) return;
+    try {
+      const result = await splitLabPayout(req.params.id);
+      res.json({ success: true, ...result });
+    } catch (e: any) {
+      handleLabPaymentError(e, res);
+    }
   })
 );

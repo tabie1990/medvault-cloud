@@ -80,14 +80,13 @@ export async function getLabOrder(id: string) {
 
 export async function updateLabOrderStatus(
   id: string,
-  update: { status: string; resultPayload?: unknown; paymentStatus?: string }
+  update: { status: string; resultPayload?: unknown }
 ) {
   const order = await prisma.labOrder.update({
     where: { id },
     data: {
       status: update.status as any,
-      resultPayload: update.resultPayload as any,
-      paymentStatus: update.paymentStatus
+      resultPayload: update.resultPayload as any
     }
   });
 
