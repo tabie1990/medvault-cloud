@@ -65,10 +65,13 @@ names, test names, or appointment times — only use what tools return to you.`;
 const tools: Anthropic.Tool[] = [
   {
     name: 'list_doctors',
-    description: 'List verified doctors available for teleconsult, optionally filtered by specialty.',
+    description: 'List verified doctors available for teleconsult. Filter by specialty, or by name if the patient asks for a specific doctor by name — use name, not specialty, when they mention a doctor\'s name.',
     input_schema: {
       type: 'object',
-      properties: { specialty: { type: 'string' } }
+      properties: {
+        specialty: { type: 'string' },
+        name: { type: 'string', description: "The doctor's name or part of it, if the patient asked for someone specific" }
+      }
     }
   },
   {
@@ -187,7 +190,8 @@ async function executeTool(
       const doctors = await prisma.doctor.findMany({
         where: {
           verificationStatus: 'verified',
-          ...(input.specialty ? { specialty: { contains: input.specialty, mode: 'insensitive' } } : {})
+          ...(input.specialty ? { specialty: { contains: input.specialty, mode: 'insensitive' } } : {}),
+          ...(input.name ? { fullName: { contains: input.name, mode: 'insensitive' } } : {})
         },
         take: 10
       });
@@ -390,6 +394,7 @@ export async function handleIncomingWhatsAppMessage(phone: string, text: string)
         globalPatientId: contact.globalPatientId,
         waPhoneNumber: contact.waPhoneNumber
       });
+      console.log(`[ai-agent:tool] ${toolUse.name}(${JSON.stringify(toolUse.input)}) -> ${result}`);
       toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: result });
     }
     messages.push({ role: 'user', content: toolResults });
