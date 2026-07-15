@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { verifyWebhookChallenge, parseInboundMessages } from '../services/whatsapp.service.js';
 import { handleIncomingWhatsAppMessage } from '../services/ai-agent.service.js';
 import { asyncHandler } from '../middleware/error.middleware.js';
+import { env } from '../config/env.js';
 
 export const whatsappRouter = Router();
 
@@ -20,6 +21,14 @@ whatsappRouter.post(
     res.sendStatus(200);
     const messages = parseInboundMessages(req.body);
     for (const msg of messages) {
+      // This one Callback URL is shared across every number on the Meta
+      // app — including a separate number used only for OTP delivery to
+      // a different system entirely. Only react to messages that actually
+      // arrived on the AI agent's own number; anything else is silently
+      // ignored rather than accidentally treated as a conversation.
+      if (msg.receivingPhoneNumberId && msg.receivingPhoneNumberId !== env.whatsappPhoneNumberId) {
+        continue;
+      }
       handleIncomingWhatsAppMessage(msg.from, msg.text).catch((err) =>
         console.error('ai-agent error:', err)
       );

@@ -92,17 +92,25 @@ export function verifyWebhookChallenge(query: Record<string, unknown>): string |
 export interface InboundWhatsAppMessage {
   from: string;
   text: string;
+  receivingPhoneNumberId: string | undefined;
 }
 
-/** Parses Meta's webhook payload shape down to the parts we care about. */
+/** Parses Meta's webhook payload shape down to the parts we care about.
+ * Meta gives one Callback URL per app, shared across every verified
+ * number on it — this includes which number a message actually arrived
+ * on (`metadata.phone_number_id`), so a webhook handler serving multiple
+ * numbers for different purposes (here: one for OTP delivery only, one
+ * for the AI agent) can tell them apart rather than processing everything
+ * the same way regardless of source. */
 export function parseInboundMessages(body: any): InboundWhatsAppMessage[] {
   const messages: InboundWhatsAppMessage[] = [];
   const entries = body?.entry ?? [];
   for (const entry of entries) {
     for (const change of entry?.changes ?? []) {
+      const receivingPhoneNumberId = change?.value?.metadata?.phone_number_id;
       for (const msg of change?.value?.messages ?? []) {
         if (msg.type === 'text' && msg.text?.body) {
-          messages.push({ from: msg.from, text: msg.text.body });
+          messages.push({ from: msg.from, text: msg.text.body, receivingPhoneNumberId });
         }
       }
     }
