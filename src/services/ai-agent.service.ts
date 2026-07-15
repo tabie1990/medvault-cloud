@@ -12,6 +12,32 @@ const MODEL = 'claude-haiku-4-5-20251001'; // cheapest capable model — fits a 
 const MAX_TOOL_ITERATIONS = 4;
 const MAX_STORED_TURNS = 8;
 
+/**
+ * Truncates conversation history to the last N genuine exchanges, never
+ * mid-way through a tool_use/tool_result pair. A naive `messages.slice(-N)`
+ * on the raw array is unsafe here: a single logical exchange in a
+ * tool-using conversation isn't one array entry, it's several (user
+ * message → assistant message with a tool call → user message with that
+ * tool's result → ...), and cutting inside that sequence leaves a
+ * dangling tool_result with no matching tool_use before it — which
+ * Anthropic's API correctly rejects on the next call. Found this exact
+ * failure in testing, not theoretically: a real conversation broke after
+ * enough tool calls accumulated. Fix: only ever start the retained window
+ * at a genuine new user text message, since everything between one of
+ * those and the next forms a complete, self-contained exchange.
+ */
+function truncateConversation(messages: Anthropic.MessageParam[], maxExchanges: number): Anthropic.MessageParam[] {
+  const userTextIndices: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].role === 'user' && typeof messages[i].content === 'string') {
+      userTextIndices.push(i);
+    }
+  }
+  if (userTextIndices.length <= maxExchanges) return messages;
+  const cutIndex = userTextIndices[userTextIndices.length - maxExchanges];
+  return messages.slice(cutIndex);
+}
+
 const SYSTEM_PROMPT = `You are the MedVAULT WhatsApp assistant for a healthcare network in Cameroon.
 
 You can: help a patient find and book a teleconsult with a specific doctor, take payment for it,
@@ -377,6 +403,6 @@ export async function handleIncomingWhatsAppMessage(phone: string, text: string)
 
   await prisma.whatsAppContact.update({
     where: { id: contact.id },
-    data: { conversationState: { turns: messages.slice(-MAX_STORED_TURNS) } as any }
+    data: { conversationState: { turns: truncateConversation(messages, MAX_STORED_TURNS) } as any }
   });
 }
