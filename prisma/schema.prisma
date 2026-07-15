@@ -350,6 +350,10 @@ model LabProvider {
   hospitalId         String?
   serviceType        LabServiceType @default(on_site)
   homeServiceFee     Decimal? @default(0)
+  // Where a lab order payout goes — falls back to the owning doctor's
+  // momo if unset, same fallback pattern as Hospital's for appointments.
+  momoNumber         String?
+  momoNetwork        String?
   city               String?
   region             String?
   verificationStatus VerificationStatus @default(pending)
@@ -398,7 +402,10 @@ model LabOrder {
   scheduledTime         String?
   status                LabOrderStatus @default(requested)
   totalCost             Decimal?
-  paymentStatus         String?  @default("unpaid")
+  paymentStatus         PaymentStatus @default(unpaid)
+  paymentReference      String?
+  paymentAmount         Decimal?
+  paymentPhone          String?
   resultPayload         Json?
   lastSyncedStatus      LabOrderStatus? // NULL = never synced. Tracks *which status* was
                                         // last fanned out, not just whether it ever was —
@@ -416,6 +423,7 @@ model LabOrder {
   referralAppointment   Appointment?   @relation(fields: [referralAppointmentId], references: [id])
   labProvider           LabProvider    @relation(fields: [labProviderId], references: [id])
   items                 LabOrderItem[]
+  paymentSplits         PaymentSplit[]
 
   @@index([globalPatientId])
   @@index([labProviderId, status])
@@ -452,9 +460,16 @@ model TelemedicineSession {
 // to the doctor (or hospital, if the doctor has no MoMo of their own) —
 // two separate Campay transfer calls. Mirrors the HMS's own
 // teleconsult_payment_splits table field-for-field.
+// Handles payouts for both teleconsults (Appointment) and lab orders
+// (LabOrder) — deliberately one model, not two near-identical ones.
+// Exactly one of appointmentId/labOrderId is set, enforced at the
+// application layer (payment.service.ts / lab-payment.service.ts), not
+// here — Prisma doesn't have a clean way to express "exactly one of these
+// two is non-null" as a schema-level constraint.
 model PaymentSplit {
   id                 String   @id @default(uuid()) @db.Uuid
-  appointmentId      String   @db.Uuid
+  appointmentId      String?  @db.Uuid
+  labOrderId         String?  @db.Uuid
   totalAmount        Decimal
   platformFeePct     Decimal  @default(10)
   platformAmount     Decimal
@@ -468,7 +483,8 @@ model PaymentSplit {
   status             PaymentSplitStatus @default(pending)
   createdAt          DateTime @default(now())
   completedAt        DateTime?
-  appointment        Appointment @relation(fields: [appointmentId], references: [id])
+  appointment        Appointment? @relation(fields: [appointmentId], references: [id])
+  labOrder           LabOrder?    @relation(fields: [labOrderId], references: [id])
 }
 
 // Mirrors the HMS's teleconsult_prescriptions table — issued during or
