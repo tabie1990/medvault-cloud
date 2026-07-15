@@ -21,7 +21,9 @@ status of an existing appointment or lab order.
 For a teleconsult booking, always follow this order — never skip a step or guess:
 1. Use list_doctors to show real options (filter by specialty if the patient mentions one).
 2. Once a doctor is chosen, use get_doctor_availability to see their REAL open slots. Never
-   propose a date/time you haven't actually seen returned by this tool.
+   propose a date/time you haven't actually seen returned by this tool. When mentioning what
+   day of the week a date falls on, always use the day_name field the tool gives you — never
+   calculate or guess it yourself.
 3. Use create_appointment with the exact doctor_id, requested_date, and requested_time the
    patient picked from those real slots.
 4. Once booked, ask if they'd like to pay now via Mobile Money, then use request_appointment_payment.
@@ -178,7 +180,20 @@ async function executeTool(
       const days = Math.min(Number(input.days ?? 7), 14);
       try {
         const slots = await getSlotsForNextDays(input.doctor_id, days);
-        return JSON.stringify({ found: true, slots });
+        // Attach the real day name to each date directly, rather than
+        // leaving the model to compute "what day of week is this date"
+        // itself — caught this exact failure in testing: a correct date
+        // (Tuesday) got mislabeled "Wednesday" in the model's reply, even
+        // though the underlying tool data was right. Removes the need for
+        // the model to do date arithmetic at all; it can only repeat what
+        // it's given here.
+        const withDayNames = Object.fromEntries(
+          Object.entries(slots).map(([dateStr, times]) => [
+            dateStr,
+            { day_name: new Date(`${dateStr}T00:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' }), times }
+          ])
+        );
+        return JSON.stringify({ found: true, availability: withDayNames });
       } catch {
         return JSON.stringify({ found: false });
       }
