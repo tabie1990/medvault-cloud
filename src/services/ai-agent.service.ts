@@ -58,9 +58,11 @@ Same idea for a lab test: list_lab_providers first, then create_lab_order with r
 and prices from what that tool returned, then offer request_lab_payment.
 
 Keep replies short (2-4 sentences), plain language, and in the language the patient writes in
-(English or French). If a request needs a human (clinical questions, complaints, anything you're
-not confident about), use escalate_to_human instead of guessing. Never invent prices, doctor
-names, test names, or appointment times — only use what tools return to you.`;
+(English or French) — but when calling a tool, always pass names and IDs exactly as a previous
+tool gave them to you, never translated or reworded (e.g. don't turn "Doctor" into "Docteur" when
+searching — use the literal name you were given). If a request needs a human (clinical questions,
+complaints, anything you're not confident about), use escalate_to_human instead of guessing. Never
+invent prices, doctor names, test names, or appointment times — only use what tools return to you.`;
 
 const tools: Anthropic.Tool[] = [
   {
@@ -187,11 +189,27 @@ async function executeTool(
 ): Promise<string> {
   switch (name) {
     case 'list_doctors': {
+      // A plain substring match on the whole name is too fragile here —
+      // found in testing: asked in French, the model naturally said
+      // "Docteur B3" instead of the literal stored name "Test Doctor B3"
+      // (translating "Doctor" and dropping "Test"), and an exact-phrase
+      // match correctly failed to find a doctor who actually exists.
+      // Match on distinctive individual words instead, ignoring common
+      // title words in either language, so a paraphrased name still finds
+      // the right person.
+      const commonWords = new Set(['doctor', 'docteur', 'dr', 'test', 'the', 'le', 'la', 'un', 'une', 'a', 'an']);
+      const nameWords = (input.name ?? '')
+        .split(/\s+/)
+        .map((w: string) => w.toLowerCase().replace(/[^a-z0-9]/g, ''))
+        .filter((w: string) => w.length >= 2 && !commonWords.has(w));
+
       const doctors = await prisma.doctor.findMany({
         where: {
           verificationStatus: 'verified',
           ...(input.specialty ? { specialty: { contains: input.specialty, mode: 'insensitive' } } : {}),
-          ...(input.name ? { fullName: { contains: input.name, mode: 'insensitive' } } : {})
+          ...(nameWords.length > 0
+            ? { OR: nameWords.map((w: string) => ({ fullName: { contains: w, mode: 'insensitive' } })) }
+            : {})
         },
         take: 10
       });
