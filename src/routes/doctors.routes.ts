@@ -49,7 +49,7 @@ doctorsRouter.post(
 
     if (doctor.email) {
       // Synchronous, not queued — see email.service.ts for why.
-      await sendWelcomeCredentialsEmail(doctor.email, doctor.email, tempPassword, `${env.webAppUrl}/login`)
+      await sendWelcomeCredentialsEmail(doctor.email, doctor.email, tempPassword, `${env.webAppUrl}/staff-login`)
         .catch((err) => console.error('welcome email failed to send:', err.message));
     }
 

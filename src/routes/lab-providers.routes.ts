@@ -199,7 +199,7 @@ labProvidersRouter.post(
     });
 
     if (staff.email) {
-      await sendWelcomeCredentialsEmail(staff.email, staff.email, tempPassword, `${env.webAppUrl}/login`)
+      await sendWelcomeCredentialsEmail(staff.email, staff.email, tempPassword, `${env.webAppUrl}/staff-login`)
         .catch((err) => console.error('welcome email failed to send:', err.message));
     }
 
