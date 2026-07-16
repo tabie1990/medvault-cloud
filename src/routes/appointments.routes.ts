@@ -67,7 +67,7 @@ appointmentsRouter.get(
   asyncHandler(async (req: AuthedRequest, res) => {
     const appointments = await prisma.appointment.findMany({
       where: { doctorId: req.user!.sub },
-      include: { telemedicineSessions: true },
+      include: { telemedicineSession: true },
       orderBy: { requestedDate: 'asc' }
     });
     res.json({ success: true, appointments });
