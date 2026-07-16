@@ -12,6 +12,26 @@ import { asyncHandler } from '../middleware/error.middleware.js';
 
 export const labOrdersRouter = Router();
 
+// A lab staff member's own lab's orders — needed for their dashboard.
+// Registered here, before any /:id pattern below, since a literal path
+// like this must come before a parameterized one or Express matches the
+// wrong route (treating "my" as if it were an order ID) — a mistake this
+// exact file already made once while building this same endpoint.
+labOrdersRouter.get(
+  '/my',
+  requireAuth('lab_staff'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const staff = await prisma.labStaff.findUnique({ where: { id: req.user!.sub } });
+    if (!staff) return res.status(404).json({ success: false, error: 'lab_staff_not_found' });
+    const orders = await prisma.labOrder.findMany({
+      where: { labProviderId: staff.labProviderId },
+      include: { items: { include: { labService: true } } },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json({ success: true, lab_orders: orders });
+  })
+);
+
 // Shared by PATCH and the payment endpoints below — a doctor may only act
 // on a lab order they referred or whose lab they own; lab staff only on
 // orders belonging to their own lab. Extracted here rather than
