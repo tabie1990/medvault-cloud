@@ -1,10 +1,24 @@
 import { Router } from 'express';
+import { prisma } from '../db/prisma.js';
 import { createAppointment, listPendingAppointmentsForHospital } from '../services/appointment.service.js';
 import { requestPayment, checkPaymentStatus, markPaid, splitPayout } from '../services/payment.service.js';
-import { requireAuth } from '../middleware/auth.middleware.js';
+import { requireAuth, type AuthedRequest } from '../middleware/auth.middleware.js';
 import { asyncHandler } from '../middleware/error.middleware.js';
 
 export const appointmentsRouter = Router();
+
+// Shared by request-payment and payment-status — a patient may only act
+// on their own appointment, never anyone else's by guessing an ID. A
+// doctor may act on any appointment (matches the original Block 3 design,
+// where the doctor initiates payment collection during a call).
+async function isAuthorizedForAppointmentPayment(appointmentId: string, user: { sub: string; role: string }): Promise<boolean> {
+  if (user.role === 'doctor') return true;
+  if (user.role === 'patient') {
+    const appt = await prisma.appointment.findUnique({ where: { id: appointmentId } });
+    return Boolean(appt && appt.globalPatientId === user.sub);
+  }
+  return false;
+}
 
 appointmentsRouter.post(
   '/',
@@ -67,8 +81,11 @@ function handlePaymentError(e: any, res: any) {
 
 appointmentsRouter.post(
   '/:id/request-payment',
-  requireAuth('doctor'),
-  asyncHandler(async (req, res) => {
+  requireAuth('doctor', 'patient'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    if (!(await isAuthorizedForAppointmentPayment(req.params.id, req.user!))) {
+      return res.status(403).json({ success: false, error: 'not_authorized_for_this_appointment' });
+    }
     const { phone, amount } = req.body;
     if (!phone || !amount) return res.status(400).json({ success: false, error: 'phone and amount are both required' });
     try {
@@ -82,8 +99,11 @@ appointmentsRouter.post(
 
 appointmentsRouter.get(
   '/:id/payment-status',
-  requireAuth('doctor'),
-  asyncHandler(async (req, res) => {
+  requireAuth('doctor', 'patient'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    if (!(await isAuthorizedForAppointmentPayment(req.params.id, req.user!))) {
+      return res.status(403).json({ success: false, error: 'not_authorized_for_this_appointment' });
+    }
     try {
       const data = await checkPaymentStatus(req.params.id);
       res.json({ success: true, ...data });
