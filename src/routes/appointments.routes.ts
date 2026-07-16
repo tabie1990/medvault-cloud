@@ -58,6 +58,22 @@ appointmentsRouter.get(
   })
 );
 
+// A doctor's own appointments — needed for their dashboard. Includes any
+// linked telemedicine session, since that's how the dashboard knows
+// whether a session/room already exists or still needs to be started.
+appointmentsRouter.get(
+  '/my',
+  requireAuth('doctor'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const appointments = await prisma.appointment.findMany({
+      where: { doctorId: req.user!.sub },
+      include: { telemedicineSessions: true },
+      orderBy: { requestedDate: 'asc' }
+    });
+    res.json({ success: true, appointments });
+  })
+);
+
 const knownPaymentErrors: Record<string, number> = {
   appointment_not_found: 404,
   invalid_cameroon_phone: 400,
