@@ -107,6 +107,7 @@ enum NotificationStatus {
 enum OtpPurpose {
   patient_login
   doctor_login
+  password_reset
 }
 
 // ── Core: hospitals, installations, identity, sync (Phase 1-6) ─────────────

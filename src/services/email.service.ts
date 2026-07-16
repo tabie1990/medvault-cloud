@@ -75,3 +75,15 @@ export async function sendWelcomeCredentialsEmail(
       `If you didn't expect this email, please ignore it.`
   );
 }
+
+// Same reasoning as the welcome email — sent synchronously, never through
+// the async Notification queue, since a reset code shouldn't sit
+// persisted in a database row any longer than the request itself.
+export async function sendPasswordResetEmail(to: string, code: string): Promise<void> {
+  await send(
+    to,
+    'Your MedVAULT password reset code',
+    `Your password reset code is ${code}. It expires in 5 minutes.\n\n` +
+      `If you didn't request this, you can safely ignore this email — your password won't be changed.`
+  );
+}

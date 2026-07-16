@@ -3,7 +3,7 @@ import { generateSixDigitCode } from './id.service.js';
 
 // Mirrors the OtpPurpose enum in prisma/schema.prisma as a plain string union,
 // so this file type-checks independently of when `prisma generate` last ran.
-export type OtpPurpose = 'patient_login' | 'doctor_login';
+export type OtpPurpose = 'patient_login' | 'doctor_login' | 'password_reset';
 
 const OTP_TTL_MINUTES = 5;
 
