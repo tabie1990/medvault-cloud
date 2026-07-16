@@ -174,6 +174,66 @@ doctorsRouter.get(
   })
 );
 
+// Public — a single doctor's public-facing details (name, specialty, fee).
+// Deliberately returns only what a patient booking screen needs to show
+// and to know the real amount to charge — never email, phone, momo
+// details, or anything else on the Doctor record.
+doctorsRouter.get(
+  '/:id/public',
+  asyncHandler(async (req, res) => {
+    const doctor = await prisma.doctor.findUnique({ where: { id: req.params.id } });
+    if (!doctor || doctor.verificationStatus !== 'verified') {
+      return res.status(404).json({ success: false, error: 'doctor_not_found' });
+    }
+    res.json({
+      success: true,
+      doctor: {
+        id: doctor.id,
+        fullName: doctor.fullName,
+        specialty: doctor.specialty,
+        consultationTypes: doctor.consultationTypes,
+        teleconsultFee: doctor.teleconsultFee
+      }
+    });
+  })
+);
+
+// Public — the same "find a doctor" capability the WhatsApp agent's
+// list_doctors tool has internally, exposed as a real endpoint for the
+// patient web portal to call. Same fuzzy name-matching logic (a plain
+// substring match on a full name is too fragile — see ai-agent.service.ts
+// for why), kept in sync deliberately rather than duplicated by accident.
+doctorsRouter.get(
+  '/browse',
+  asyncHandler(async (req, res) => {
+    const { specialty, name } = req.query;
+    const commonWords = new Set(['doctor', 'docteur', 'dr', 'test', 'the', 'le', 'la', 'un', 'une', 'a', 'an']);
+    const nameWords = String(name ?? '')
+      .split(/\s+/)
+      .map((w) => w.toLowerCase().replace(/[^a-z0-9]/g, ''))
+      .filter((w) => w.length >= 2 && !commonWords.has(w));
+
+    const doctors = await prisma.doctor.findMany({
+      where: {
+        verificationStatus: 'verified',
+        ...(specialty ? { specialty: { contains: String(specialty), mode: 'insensitive' } } : {}),
+        ...(nameWords.length > 0 ? { OR: nameWords.map((w) => ({ fullName: { contains: w, mode: 'insensitive' } })) } : {})
+      },
+      take: 20
+    });
+    res.json({
+      success: true,
+      doctors: doctors.map((d: any) => ({
+        id: d.id,
+        fullName: d.fullName,
+        specialty: d.specialty,
+        consultationTypes: d.consultationTypes,
+        teleconsultFee: d.teleconsultFee
+      }))
+    });
+  })
+);
+
 // Public — this is what a patient-facing booking screen (web portal,
 // WhatsApp agent) actually calls to show real, bookable slots.
 doctorsRouter.get(
