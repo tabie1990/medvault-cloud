@@ -10,6 +10,24 @@ import { env } from '../config/env.js';
 
 export const labProvidersRouter = Router();
 
+// A doctor's own labs — needed for a "my labs" management screen.
+// Registered before any /:id pattern below, same lesson learned building
+// the appointments and lab-orders equivalents of this endpoint: a
+// literal path must come before a parameterized one or Express matches
+// the wrong route.
+labProvidersRouter.get(
+  '/my',
+  requireAuth('doctor'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const providers = await prisma.labProvider.findMany({
+      where: { ownerDoctorId: req.user!.sub },
+      include: { services: true },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json({ success: true, lab_providers: providers });
+  })
+);
+
 labProvidersRouter.post(
   '/register',
   requireAuth('doctor'),
