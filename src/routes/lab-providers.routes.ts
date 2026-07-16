@@ -21,7 +21,7 @@ labProvidersRouter.get(
   asyncHandler(async (req: AuthedRequest, res) => {
     const providers = await prisma.labProvider.findMany({
       where: { ownerDoctorId: req.user!.sub },
-      include: { services: true },
+      include: { services: true, workingHours: { orderBy: { dayOfWeek: 'asc' } } },
       orderBy: { createdAt: 'desc' }
     });
     res.json({ success: true, lab_providers: providers });
@@ -73,6 +73,49 @@ labProvidersRouter.patch(
       }
     });
     res.json({ success: true, lab_provider: updated });
+  })
+);
+
+// Owner doctor sets this lab's opening hours — replace-all pattern,
+// same reasoning as DoctorAvailability: setting a new schedule almost
+// always means "here's my new week," not "add one more window."
+labProvidersRouter.put(
+  '/:id/working-hours',
+  requireAuth('doctor'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const provider = await prisma.labProvider.findUnique({ where: { id: req.params.id } });
+    if (!provider) return res.status(404).json({ success: false, error: 'lab_provider_not_found' });
+    if (provider.ownerDoctorId !== req.user!.sub) {
+      return res.status(403).json({ success: false, error: 'not_the_owner_of_this_lab' });
+    }
+    const { windows } = req.body;
+    if (!Array.isArray(windows)) {
+      return res.status(400).json({ success: false, error: 'windows[] is required, each {day_of_week, open_time, close_time}' });
+    }
+    for (const w of windows) {
+      if (w.day_of_week < 0 || w.day_of_week > 6) {
+        return res.status(400).json({ success: false, error: 'day_of_week must be 0-6' });
+      }
+      if (!/^\d{2}:\d{2}$/.test(w.open_time) || !/^\d{2}:\d{2}$/.test(w.close_time)) {
+        return res.status(400).json({ success: false, error: 'open_time and close_time must be in HH:MM format' });
+      }
+    }
+    await prisma.$transaction([
+      prisma.labWorkingHours.deleteMany({ where: { labProviderId: req.params.id } }),
+      prisma.labWorkingHours.createMany({
+        data: windows.map((w: any) => ({
+          labProviderId: req.params.id,
+          dayOfWeek: w.day_of_week,
+          openTime: w.open_time,
+          closeTime: w.close_time
+        }))
+      })
+    ]);
+    const workingHours = await prisma.labWorkingHours.findMany({
+      where: { labProviderId: req.params.id },
+      orderBy: { dayOfWeek: 'asc' }
+    });
+    res.json({ success: true, working_hours: workingHours });
   })
 );
 
@@ -128,7 +171,7 @@ labProvidersRouter.get(
   asyncHandler(async (req, res) => {
     const provider = await prisma.labProvider.findUnique({
       where: { id: req.params.id },
-      include: { services: { where: { isActive: true } } }
+      include: { services: { where: { isActive: true } }, workingHours: { orderBy: { dayOfWeek: 'asc' } } }
     });
     if (!provider) return res.status(404).json({ success: false, error: 'lab_provider_not_found' });
     res.json({ success: true, lab_provider: provider });

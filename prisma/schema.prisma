@@ -374,6 +374,21 @@ model LabProvider {
   services           LabService[]
   orders             LabOrder[]
   staff              LabStaff[]
+  workingHours       LabWorkingHours[]
+}
+
+// A lab's opening hours — deliberately simpler than DoctorAvailability:
+// no slot length, no slot generation. Labs don't need discrete bookable
+// time slots the way teleconsults do; this is purely "we're open these
+// hours" information, mainly for display.
+model LabWorkingHours {
+  id            String   @id @default(uuid()) @db.Uuid
+  labProviderId String   @db.Uuid
+  dayOfWeek     Int      // 0=Sunday .. 6=Saturday
+  openTime      String   // "08:00", 24-hour, plain wall-clock
+  closeTime     String   // "20:00"
+  createdAt     DateTime @default(now())
+  labProvider   LabProvider @relation(fields: [labProviderId], references: [id])
 }
 
 model LabService {
