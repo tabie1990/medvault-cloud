@@ -7,6 +7,7 @@ import { createLabOrder } from './lab-order.service.js';
 import { getSlotsForDate, getSlotsForNextDays } from './availability.service.js';
 import { requestPayment, checkPaymentStatus } from './payment.service.js';
 import { requestLabPayment, checkLabPaymentStatus } from './lab-payment.service.js';
+import { generateGlobalPatientId } from './id.service.js';
 
 const MODEL = 'claude-haiku-4-5-20251001'; // cheapest capable model — fits a bounded conversational task
 const MAX_TOOL_ITERATIONS = 4;
@@ -40,31 +41,94 @@ function truncateConversation(messages: Anthropic.MessageParam[], maxExchanges: 
 
 const SYSTEM_PROMPT = `You are the MedVAULT WhatsApp assistant for a healthcare network in Cameroon.
 
-You can: help a patient find and book a teleconsult with a specific doctor, take payment for it,
-browse labs and book a lab test (home visit or on-site), take payment for that, and check the
-status of an existing appointment or lab order.
+## Starting a new conversation
 
-For a teleconsult booking, always follow this order — never skip a step or guess:
-1. Use list_doctors to show real options (filter by specialty if the patient mentions one).
+If there is no prior conversation history (this is the very first message from this patient,
+or they've clearly restarted), do these two things, in order, before anything else:
+
+1. Ask which language they prefer — French or English. Wait for their answer before continuing;
+   don't guess from the language of their first message. From then on, reply only in whichever
+   they chose, until they say otherwise.
+2. Then present exactly this menu, translated into whichever language they picked, and wait for
+   their choice:
+   1. Book a hospital appointment
+   2. Book a lab test
+   3. Book an online teleconsultation
+   4. General inquiry
+
+Once they've picked an option, follow the matching flow below. Don't re-ask the language question
+or re-show this menu on later messages in the same conversation unless they explicitly ask to
+start over.
+
+## Identify the patient early
+
+Before booking anything (any of options 1-3), use register_or_identify_patient — the phone number
+is already known from context, don't ask for it. Do ask for their full name if you don't already
+have it. If they're a returning patient this simply confirms who they are with no extra questions;
+if they're new, tell them their new MedVAULT ID once so they have it for next time. This has to
+happen before create_appointment or create_lab_order, since every booking needs to be linked to a
+real patient identity, not left unlinked.
+
+## Option 1 — Hospital appointment (in-person)
+
+1. Use list_hospitals to show real hospitals (filter by city if they mention one).
+2. Use create_appointment with appointment_type "in_person" and the chosen hospital_id — no doctor
+   or specific time slot is chosen here; the hospital's own front desk handles scheduling once the
+   booking reaches them. Don't ask for a preferred date/time for this option; it's not used.
+
+## Option 2 — Lab test
+
+1. Use list_lab_providers to show real labs and their real services (filter by city if mentioned).
+2. Use create_lab_order with the real lab_service_ids and prices the previous tool actually
+   returned, never invented ones.
+3. Offer request_lab_payment once the order exists.
+
+## Option 3 — Online teleconsultation
+
+1. Use list_doctors to show real options (filter by specialty if mentioned).
 2. Once a doctor is chosen, use get_doctor_availability to see their REAL open slots. Never
    propose a date/time you haven't actually seen returned by this tool. When mentioning what
    day of the week a date falls on, always use the day_name field the tool gives you — never
    calculate or guess it yourself.
-3. Use create_appointment with the exact doctor_id, requested_date, and requested_time the
-   patient picked from those real slots.
+3. Use create_appointment with appointment_type "teleconsult" and the exact doctor_id,
+   requested_date, and requested_time the patient picked from those real slots.
 4. Once booked, ask if they'd like to pay now via Mobile Money, then use request_appointment_payment.
 
-Same idea for a lab test: list_lab_providers first, then create_lab_order with real service IDs
-and prices from what that tool returned, then offer request_lab_payment.
+## Option 4 — General inquiry
 
-Keep replies short (2-4 sentences), plain language, and in the language the patient writes in
-(English or French) — but when calling a tool, always pass names and IDs exactly as a previous
+Answer directly if it's something you can confidently help with. For anything clinical, a
+complaint, or anything you're not confident about, use escalate_to_human instead of guessing.
+
+## Throughout
+
+Keep replies short (2-4 sentences), plain language, in whichever language was chosen at the start
+of the conversation — but when calling a tool, always pass names and IDs exactly as a previous
 tool gave them to you, never translated or reworded (e.g. don't turn "Doctor" into "Docteur" when
-searching — use the literal name you were given). If a request needs a human (clinical questions,
-complaints, anything you're not confident about), use escalate_to_human instead of guessing. Never
-invent prices, doctor names, test names, or appointment times — only use what tools return to you.`;
+searching — use the literal name you were given). Never invent prices, doctor names, test names,
+hospital names, or appointment times — only use what tools actually return to you.`;
 
 const tools: Anthropic.Tool[] = [
+  {
+    name: 'register_or_identify_patient',
+    description:
+      "Identify the patient by their WhatsApp number, or register them if this is their first time. Always call this early in a conversation, before booking anything — the phone number itself is already known from context, don't ask for it. Do ask for full name (and date of birth if they're willing to share it). If they already have an account, this returns their existing MedVAULT ID and nothing changes; tell a first-timer their new ID so they know it for next time.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        full_name: { type: 'string' },
+        dob: { type: 'string', description: 'YYYY-MM-DD, optional' }
+      },
+      required: ['full_name']
+    }
+  },
+  {
+    name: 'list_hospitals',
+    description: 'List hospitals a patient can book an in-person appointment at, optionally filtered by city.',
+    input_schema: {
+      type: 'object',
+      properties: { city: { type: 'string' } }
+    }
+  },
   {
     name: 'list_doctors',
     description: 'List verified doctors available for teleconsult. Filter by specialty, or by name if the patient asks for a specific doctor by name — use name, not specialty, when they mention a doctor\'s name.',
@@ -90,12 +154,14 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: 'create_appointment',
-    description: 'Book a teleconsult appointment. For teleconsult, doctor_id/requested_date/requested_time are required and must exactly match a slot returned by get_doctor_availability — the booking will be rejected otherwise.',
+    description:
+      'Book an appointment. For a teleconsult, doctor_id/requested_date/requested_time are required and must exactly match a slot returned by get_doctor_availability — the booking will be rejected otherwise. For an in-person hospital appointment, use hospital_id from list_hospitals instead — no specific doctor or slot is chosen here, the hospital\'s own front desk handles scheduling once the booking reaches them.',
     input_schema: {
       type: 'object',
       properties: {
         appointment_type: { type: 'string', enum: ['teleconsult', 'in_person'] },
         doctor_id: { type: 'string' },
+        hospital_id: { type: 'string' },
         requested_date: { type: 'string', description: 'YYYY-MM-DD' },
         requested_time: { type: 'string', description: 'HH:MM, 24h' },
         notes: { type: 'string' }
@@ -188,6 +254,44 @@ async function executeTool(
   contact: { id: string; globalPatientId: string | null; waPhoneNumber: string }
 ): Promise<string> {
   switch (name) {
+    case 'register_or_identify_patient': {
+      const existing = await prisma.globalPatient.findFirst({ where: { primaryPhone: contact.waPhoneNumber } });
+      if (existing) {
+        if (!contact.globalPatientId) {
+          await prisma.whatsAppContact.update({ where: { id: contact.id }, data: { globalPatientId: existing.globalPatientId } });
+        }
+        return JSON.stringify({ is_new: false, global_patient_id: existing.globalPatientId, full_name: existing.fullName });
+      }
+
+      const globalPatientId = await generateGlobalPatientId();
+      const created = await prisma.globalPatient.create({
+        data: {
+          globalPatientId,
+          primaryPhone: contact.waPhoneNumber,
+          fullName: input.full_name,
+          dob: input.dob ? new Date(input.dob) : undefined,
+          // A patient who registered themselves via a direct conversation
+          // is about as confident an identity match as this system has —
+          // matches the same 75 used for hospital-side self-reported
+          // registration in sync.routes.ts, not the lower confidence
+          // fuzzy-matched identities get.
+          identityConfidence: 75
+        }
+      });
+      await prisma.whatsAppContact.update({ where: { id: contact.id }, data: { globalPatientId } });
+      return JSON.stringify({ is_new: true, global_patient_id: created.globalPatientId, full_name: created.fullName });
+    }
+
+    case 'list_hospitals': {
+      const hospitals = await prisma.hospital.findMany({
+        where: { status: 'active', ...(input.city ? { city: { contains: input.city, mode: 'insensitive' } } : {}) },
+        take: 15
+      });
+      return JSON.stringify(
+        hospitals.map((h: any) => ({ hospital_id: h.hospitalId, name: h.name, city: h.city, region: h.region }))
+      );
+    }
+
     case 'list_doctors': {
       // A plain substring match on the whole name is too fragile here —
       // found in testing: asked in French, the model naturally said
@@ -264,9 +368,13 @@ async function executeTool(
           });
         }
       }
+      if (input.appointment_type === 'in_person' && !input.hospital_id) {
+        return JSON.stringify({ error: 'hospital_id_required_for_in_person', message: 'Call list_hospitals first and use a real hospital_id.' });
+      }
       const appt = await createAppointment({
         globalPatientId: contact.globalPatientId ?? undefined,
         doctorId: input.doctor_id,
+        hospitalId: input.hospital_id,
         appointmentType: input.appointment_type,
         requestedDate: input.requested_date,
         requestedTime: input.requested_time,
@@ -369,7 +477,7 @@ export async function handleIncomingWhatsAppMessage(phone: string, text: string)
     return;
   }
 
-  const contact = await prisma.whatsAppContact.upsert({
+  let contact = await prisma.whatsAppContact.upsert({
     where: { waPhoneNumber: phone },
     update: { lastInteractionAt: new Date() },
     create: { waPhoneNumber: phone }
@@ -414,6 +522,16 @@ export async function handleIncomingWhatsAppMessage(phone: string, text: string)
       });
       console.log(`[ai-agent:tool] ${toolUse.name}(${JSON.stringify(toolUse.input)}) -> ${result}`);
       toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: result });
+
+      // A tool later in this same turn (e.g. create_appointment right
+      // after registering) needs the fresh ID, not the stale one this
+      // turn started with — re-read the contact rather than trust
+      // whatever local state might exist, since the tool itself is the
+      // one place that actually wrote it to the database.
+      if (toolUse.name === 'register_or_identify_patient') {
+        const refreshed = await prisma.whatsAppContact.findUnique({ where: { id: contact.id } });
+        if (refreshed) contact = refreshed;
+      }
     }
     messages.push({ role: 'user', content: toolResults });
   }
