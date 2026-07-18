@@ -124,7 +124,7 @@ doctorsRouter.patch(
   '/me',
   requireAuth('doctor'),
   asyncHandler(async (req: AuthedRequest, res) => {
-    const { momo_number, momo_network, teleconsult_fee, teleconsult_slot_minutes, consultation_types } = req.body;
+    const { momo_number, momo_network, teleconsult_fee, teleconsult_slot_minutes, consultation_types, specialty } = req.body;
     if (teleconsult_slot_minutes !== undefined && (teleconsult_slot_minutes < 5 || teleconsult_slot_minutes > 60)) {
       return res.status(400).json({ success: false, error: 'teleconsult_slot_minutes must be between 5 and 60' });
     }
@@ -135,7 +135,8 @@ doctorsRouter.patch(
         ...(momo_network !== undefined ? { momoNetwork: momo_network } : {}),
         ...(teleconsult_fee !== undefined ? { teleconsultFee: Number(teleconsult_fee) } : {}),
         ...(teleconsult_slot_minutes !== undefined ? { teleconsultSlotMinutes: Number(teleconsult_slot_minutes) } : {}),
-        ...(consultation_types !== undefined ? { consultationTypes: consultation_types } : {})
+        ...(consultation_types !== undefined ? { consultationTypes: consultation_types } : {}),
+        ...(specialty !== undefined ? { specialty } : {})
       }
     });
     const { passwordHash: _omit, ...safeDoctor } = doctor;
