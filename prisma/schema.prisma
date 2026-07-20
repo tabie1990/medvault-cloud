@@ -125,6 +125,17 @@ model Hospital {
   status        HospitalStatus @default(active)
   hospitalMomoNumber  String? // fallback payout target when the doctor has none set
   hospitalMomoNetwork String?
+  // Chosen over per-doctor consultation fees: one flat fee per hospital,
+  // covering the whole in-person visit regardless of which roster doctor
+  // is selected. Paid to hospitalMomoNumber above via the exact same
+  // splitPayout() path teleconsults already use — that function already
+  // falls back to the hospital's own MoMo whenever an appointment has no
+  // doctor attached, so this needed no changes to the payout logic at all.
+  flatBookingFee      Decimal?
+  // Hospital-level, not per-doctor like teleconsult's own
+  // teleconsultSlotMinutes — one slot length applies to every roster
+  // doctor at this hospital.
+  appointmentSlotMinutes Int @default(15)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   installations HospitalInstallation[]
@@ -152,6 +163,7 @@ model HospitalDoctorRoster {
   updatedAt    DateTime @updatedAt
   hospital     Hospital @relation(fields: [hospitalId], references: [hospitalId])
   workingHours HospitalDoctorWorkingHours[]
+  appointments Appointment[]
 }
 
 // Same shape as LabWorkingHours, deliberately — one day/time-range model
@@ -261,6 +273,12 @@ model Appointment {
   globalPatientId   String?
   hospitalId        String?
   doctorId          String? @db.Uuid
+  // Which hospital-roster doctor was selected for an in-person booking —
+  // separate from doctorId above, which only ever points at a cloud
+  // Doctor (teleconsult-capable, has a login). A roster doctor has
+  // neither, so this needed its own nullable FK rather than reusing
+  // doctorId for both.
+  hospitalDoctorRosterId String? @db.Uuid
   appointmentType   String
   requestedDate     DateTime?
   requestedTime     String?
@@ -290,6 +308,7 @@ model Appointment {
   globalPatient     GlobalPatient? @relation(fields: [globalPatientId], references: [globalPatientId])
   hospital          Hospital? @relation(fields: [hospitalId], references: [hospitalId])
   doctor            Doctor? @relation(fields: [doctorId], references: [id])
+  hospitalDoctorRoster HospitalDoctorRoster? @relation(fields: [hospitalDoctorRosterId], references: [id])
   telemedicineSession TelemedicineSession?
   paymentSplits     PaymentSplit[]
   prescriptions     Prescription[]

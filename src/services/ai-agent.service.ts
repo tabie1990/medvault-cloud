@@ -5,6 +5,10 @@ import { sendTextMessage } from './whatsapp.service.js';
 import { createAppointment } from './appointment.service.js';
 import { createLabOrder } from './lab-order.service.js';
 import { getSlotsForDate, getSlotsForNextDays } from './availability.service.js';
+import {
+  getSlotsForDate as getHospitalRosterSlotsForDate,
+  getSlotsForNextDays as getHospitalRosterSlotsForNextDays
+} from './hospital-roster-availability.service.js';
 import { requestPayment, checkPaymentStatus } from './payment.service.js';
 import { requestLabPayment, checkLabPaymentStatus } from './lab-payment.service.js';
 import { generateGlobalPatientId } from './id.service.js';
@@ -83,13 +87,21 @@ real patient identity, not left unlinked.
    that's a shared location, not something to read aloud to them — pass those exact coordinates to
    find_nearby_hospitals and show what it returns, sorted by real distance. Never estimate
    coordinates or distances yourself.
-2. Once a hospital is chosen, use get_hospital_doctors to show who actually works there and roughly
-   when — this is informational only (helps the patient know who they might see), not a bookable
-   slot the way teleconsult availability is. If the roster is empty, say so plainly rather than
-   inventing names or hours.
-3. Use create_appointment with appointment_type "in_person" and the chosen hospital_id — no doctor
-   or specific time slot is chosen here; the hospital's own front desk handles scheduling once the
-   booking reaches them. Don't ask for a preferred date/time for this option; it's not used.
+2. Once a hospital is chosen, use get_hospital_doctors to show who actually works there — as a
+   *numbered list* (1. Dr X — Specialty, 2. Dr Y — Specialty, ...), same pattern as the main menu, so
+   the patient can just reply with a number. If the roster is empty, say so plainly rather than
+   inventing names.
+3. Once a specific doctor is picked, use get_hospital_doctor_slots (with that doctor's
+   hospital_doctor_roster_id) to get their real open slots — never propose a time without calling
+   this first, same discipline as teleconsult. Present real slots as a numbered list too.
+4. Use create_appointment with appointment_type "in_person", the hospital_id, the chosen
+   hospital_doctor_roster_id, and the exact requested_date/requested_time the patient picked from
+   step 3 — it will be rejected if it doesn't match a real slot exactly.
+5. If the hospital has a flat_booking_fee set (shown in list_hospitals' result), payment is required
+   before the appointment is truly confirmed — use request_appointment_payment with that exact
+   amount, same as a teleconsult, and don't tell the patient they're booked until payment succeeds.
+   If the hospital has no flat_booking_fee set, the booking is confirmed as soon as step 4 succeeds,
+   no payment step needed.
 
 ## Option 2 — Lab test
 
@@ -154,6 +166,18 @@ const tools: Anthropic.Tool[] = [
     }
   },
   {
+    name: 'get_hospital_doctor_slots',
+    description: "Get a specific hospital-roster doctor's real open appointment slots for the next several days, using hospital_doctor_roster_id from get_hospital_doctors. Always call this before proposing a time, same as teleconsult availability.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        hospital_doctor_roster_id: { type: 'string' },
+        days: { type: 'number', description: 'How many days ahead to check, default 7, max 14' }
+      },
+      required: ['hospital_doctor_roster_id']
+    }
+  },
+  {
     name: 'find_nearby_hospitals',
     description: 'Find real hospitals near a specific GPS location, sorted by distance. Use this when the patient has shared their location (a message in the form [LOCATION_SHARED lat=... lng=...]) — pass those exact coordinates through, never estimate or guess coordinates yourself.',
     input_schema: {
@@ -191,13 +215,14 @@ const tools: Anthropic.Tool[] = [
   {
     name: 'create_appointment',
     description:
-      'Book an appointment. For a teleconsult, doctor_id/requested_date/requested_time are required and must exactly match a slot returned by get_doctor_availability — the booking will be rejected otherwise. For an in-person hospital appointment, use hospital_id from list_hospitals instead — no specific doctor or slot is chosen here, the hospital\'s own front desk handles scheduling once the booking reaches them.',
+      "Book an appointment. For a teleconsult, doctor_id/requested_date/requested_time are required and must exactly match a slot returned by get_doctor_availability — the booking will be rejected otherwise. For an in-person hospital appointment: if the patient picked a specific roster doctor, pass hospital_id, hospital_doctor_roster_id, requested_date, and requested_time together, matching a real slot from get_hospital_doctor_slots exactly — rejected otherwise, same discipline as teleconsult. If no specific doctor was chosen, hospital_id alone is enough and the hospital's own front desk handles scheduling.",
     input_schema: {
       type: 'object',
       properties: {
         appointment_type: { type: 'string', enum: ['teleconsult', 'in_person'] },
         doctor_id: { type: 'string' },
         hospital_id: { type: 'string' },
+        hospital_doctor_roster_id: { type: 'string' },
         requested_date: { type: 'string', description: 'YYYY-MM-DD' },
         requested_time: { type: 'string', description: 'HH:MM, 24h' },
         notes: { type: 'string' }
@@ -324,7 +349,13 @@ async function executeTool(
         take: 15
       });
       return JSON.stringify(
-        hospitals.map((h: any) => ({ hospital_id: h.hospitalId, name: h.name, city: h.city, region: h.region }))
+        hospitals.map((h: any) => ({
+          hospital_id: h.hospitalId,
+          name: h.name,
+          city: h.city,
+          region: h.region,
+          flat_booking_fee: h.flatBookingFee ? Number(h.flatBookingFee) : null
+        }))
       );
     }
 
@@ -337,6 +368,7 @@ async function executeTool(
       return JSON.stringify({
         found: true,
         doctors: roster.map((d: any) => ({
+          hospital_doctor_roster_id: d.id,
           name: d.fullName,
           specialty: d.specialty,
           working_hours: d.workingHours.map((w: any) => ({
@@ -346,6 +378,24 @@ async function executeTool(
           }))
         }))
       });
+    }
+
+    case 'get_hospital_doctor_slots': {
+      const days = Math.min(Number(input.days ?? 7), 14);
+      try {
+        const slots = await getHospitalRosterSlotsForNextDays(input.hospital_doctor_roster_id, days);
+        // Same reasoning as get_doctor_availability — attach the real day
+        // name directly rather than leaving the model to compute it.
+        const withDayNames = Object.fromEntries(
+          Object.entries(slots).map(([dateStr, times]) => [
+            dateStr,
+            { day_name: new Date(`${dateStr}T00:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' }), times }
+          ])
+        );
+        return JSON.stringify({ found: true, availability: withDayNames });
+      } catch {
+        return JSON.stringify({ found: false });
+      }
     }
 
     case 'find_nearby_hospitals': {
@@ -440,10 +490,27 @@ async function executeTool(
       if (input.appointment_type === 'in_person' && !input.hospital_id) {
         return JSON.stringify({ error: 'hospital_id_required_for_in_person', message: 'Call list_hospitals first and use a real hospital_id.' });
       }
+      if (input.appointment_type === 'in_person' && input.hospital_doctor_roster_id) {
+        if (!input.requested_date || !input.requested_time) {
+          return JSON.stringify({
+            error: 'requested_date_and_requested_time_required_when_a_roster_doctor_is_chosen'
+          });
+        }
+        // Same gate as teleconsult — never let the model book a time it
+        // merely guessed sounds plausible.
+        const realSlots = await getHospitalRosterSlotsForDate(input.hospital_doctor_roster_id, input.requested_date);
+        if (!realSlots.includes(input.requested_time)) {
+          return JSON.stringify({
+            error: 'requested_time_not_available',
+            message: 'That slot is not actually open. Call get_hospital_doctor_slots again and offer a real one.'
+          });
+        }
+      }
       const appt = await createAppointment({
         globalPatientId: contact.globalPatientId ?? undefined,
         doctorId: input.doctor_id,
         hospitalId: input.hospital_id,
+        hospitalDoctorRosterId: input.hospital_doctor_roster_id,
         appointmentType: input.appointment_type,
         requestedDate: input.requested_date,
         requestedTime: input.requested_time,

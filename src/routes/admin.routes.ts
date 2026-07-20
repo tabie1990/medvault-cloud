@@ -216,20 +216,25 @@ adminRouter.post(
   })
 );
 
-// Set/update an existing hospital's coordinates — needed for any hospital
-// registered before location search existed, or created without them.
+// Set/update an existing hospital's coordinates, flat booking fee, and
+// payout MoMo details — needed for any hospital registered before these
+// existed, or created without them.
 adminRouter.patch(
   '/hospitals/:hospitalId',
   requireAuth('admin'),
   asyncHandler(async (req, res) => {
-    const { latitude, longitude, city, region } = req.body;
+    const { latitude, longitude, city, region, flat_booking_fee, hospital_momo_number, hospital_momo_network, appointment_slot_minutes } = req.body;
     const hospital = await prisma.hospital.update({
       where: { hospitalId: req.params.hospitalId },
       data: {
         ...(latitude !== undefined ? { latitude: Number(latitude) } : {}),
         ...(longitude !== undefined ? { longitude: Number(longitude) } : {}),
         ...(city !== undefined ? { city } : {}),
-        ...(region !== undefined ? { region } : {})
+        ...(region !== undefined ? { region } : {}),
+        ...(flat_booking_fee !== undefined ? { flatBookingFee: Number(flat_booking_fee) } : {}),
+        ...(hospital_momo_number !== undefined ? { hospitalMomoNumber: hospital_momo_number } : {}),
+        ...(hospital_momo_network !== undefined ? { hospitalMomoNetwork: hospital_momo_network } : {}),
+        ...(appointment_slot_minutes !== undefined ? { appointmentSlotMinutes: Number(appointment_slot_minutes) } : {})
       }
     });
     res.json({ success: true, hospital });

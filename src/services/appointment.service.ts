@@ -5,6 +5,7 @@ export interface CreateAppointmentInput {
   globalPatientId?: string;
   hospitalId?: string;
   doctorId?: string;
+  hospitalDoctorRosterId?: string;
   appointmentType: string;
   requestedDate?: string;
   requestedTime?: string;
@@ -31,6 +32,7 @@ export async function createAppointment(input: CreateAppointmentInput) {
       globalPatientId: input.globalPatientId,
       hospitalId: input.hospitalId,
       doctorId: input.doctorId,
+      hospitalDoctorRosterId: input.hospitalDoctorRosterId,
       appointmentType: input.appointmentType,
       requestedDate: input.requestedDate ? new Date(input.requestedDate) : undefined,
       requestedTime: input.requestedTime,
