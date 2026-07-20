@@ -573,3 +573,18 @@ model OtpCode {
 
   @@index([phone, purpose])
 }
+
+// Deliberately lightweight — not an attempt at comprehensive error
+// tracking (that's what a real observability tool is for), just enough
+// for an admin to see "something's been failing in the background"
+// without needing server SSH access to check pm2 logs directly.
+// Scoped initially to the unattended background pollers, since those are
+// exactly the kind of failure an admin has no other way to notice.
+model ErrorLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  source    String   // e.g. 'poller:appointments', 'poller:lab-orders'
+  message   String
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}

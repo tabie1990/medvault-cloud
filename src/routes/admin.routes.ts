@@ -7,11 +7,12 @@ import { getDownloadUrl } from '../services/storage.service.js';
 export const adminRouter = Router();
 
 /**
- * Minimal scope for the July 30 pilot, deliberately — see ROADMAP.md.
  * KYC approve/reject is the one piece of "admin" that can't be optional:
  * without it nobody gets verified, and verified status gates who can
- * accept a teleconsult or appear as a lab. The fuller monitoring dashboard
- * (revenue, error feed, stale-sync alerts) is explicitly deferred.
+ * accept a teleconsult or appear as a lab. The fuller monitoring
+ * dashboard (revenue, error feed, stale-sync alerts) below was initially
+ * deferred past the pilot's core scope, then built once that core scope
+ * was actually complete.
  */
 
 adminRouter.get(
@@ -114,5 +115,67 @@ adminRouter.post(
       }
     });
     res.json({ success: true, verification_status: provider.verificationStatus });
+  })
+);
+
+/**
+ * Fuller monitoring dashboard — revenue, error feed, stale-sync alerts.
+ * Deliberately deferred past the initial pilot scope (see the comment at
+ * the top of this file); built once the pilot's core scope was complete
+ * and this became the next real priority.
+ */
+
+adminRouter.get(
+  '/revenue',
+  requireAuth('admin'),
+  asyncHandler(async (_req, res) => {
+    const [platformTotal, appointmentGross, labOrderGross, recentSplits] = await Promise.all([
+      prisma.paymentSplit.aggregate({ where: { status: 'completed' }, _sum: { platformAmount: true } }),
+      prisma.appointment.aggregate({ where: { paymentStatus: 'paid' }, _sum: { paymentAmount: true } }),
+      prisma.labOrder.aggregate({ where: { paymentStatus: 'paid' }, _sum: { paymentAmount: true } }),
+      prisma.paymentSplit.findMany({
+        where: { status: 'completed' },
+        orderBy: { completedAt: 'desc' },
+        take: 20,
+        select: { id: true, totalAmount: true, platformAmount: true, providerAmount: true, completedAt: true, appointmentId: true, labOrderId: true }
+      })
+    ]);
+    res.json({
+      success: true,
+      platform_revenue_total: platformTotal._sum.platformAmount ?? 0,
+      appointment_gross_total: appointmentGross._sum.paymentAmount ?? 0,
+      lab_order_gross_total: labOrderGross._sum.paymentAmount ?? 0,
+      recent_payouts: recentSplits
+    });
+  })
+);
+
+adminRouter.get(
+  '/errors',
+  requireAuth('admin'),
+  asyncHandler(async (req, res) => {
+    const limit = Math.min(Number(req.query.limit ?? 50), 200);
+    const errors = await prisma.errorLog.findMany({ orderBy: { createdAt: 'desc' }, take: limit });
+    res.json({ success: true, errors });
+  })
+);
+
+adminRouter.get(
+  '/stale-syncs',
+  requireAuth('admin'),
+  asyncHandler(async (req, res) => {
+    // Default: flag any active hospital installation that hasn't been
+    // seen in over an hour. Configurable via ?hours=N for a looser or
+    // tighter threshold without a code change.
+    const hours = Math.min(Number(req.query.hours ?? 1), 168);
+    const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000);
+    const stale = await prisma.hospitalInstallation.findMany({
+      where: {
+        status: 'active',
+        OR: [{ lastSeenAt: null }, { lastSeenAt: { lt: cutoff } }]
+      },
+      include: { hospital: { select: { name: true, hospitalId: true } } }
+    });
+    res.json({ success: true, threshold_hours: hours, stale_installations: stale });
   })
 );

@@ -1,5 +1,6 @@
 import { prisma } from '../db/prisma.js';
 import { dispatchPendingNotifications } from '../services/notification.service.js';
+import { logError } from '../services/error-log.service.js';
 import crypto from 'crypto';
 
 /**
@@ -150,10 +151,10 @@ async function requeueStaleUnackedEvents() {
 }
 
 export function startPollers() {
-  setInterval(() => fanOutNewAppointments().catch((e) => console.error('poller:appointments', e)), INTERVAL_MS);
-  setInterval(() => fanOutLabOrderEvents().catch((e) => console.error('poller:lab-orders', e)), INTERVAL_MS);
-  setInterval(() => finalizeHospitalPushedEvents().catch((e) => console.error('poller:sync-events', e)), INTERVAL_MS);
-  setInterval(() => requeueStaleUnackedEvents().catch((e) => console.error('poller:sync-requeue', e)), INTERVAL_MS);
-  setInterval(() => dispatchPendingNotifications().catch((e) => console.error('poller:notifications', e)), INTERVAL_MS);
+  setInterval(() => fanOutNewAppointments().catch((e) => logError('poller:appointments', e)), INTERVAL_MS);
+  setInterval(() => fanOutLabOrderEvents().catch((e) => logError('poller:lab-orders', e)), INTERVAL_MS);
+  setInterval(() => finalizeHospitalPushedEvents().catch((e) => logError('poller:sync-events', e)), INTERVAL_MS);
+  setInterval(() => requeueStaleUnackedEvents().catch((e) => logError('poller:sync-requeue', e)), INTERVAL_MS);
+  setInterval(() => dispatchPendingNotifications().catch((e) => logError('poller:notifications', e)), INTERVAL_MS);
   console.log('In-process pollers started (appointments, lab orders, sync events, notifications).');
 }
