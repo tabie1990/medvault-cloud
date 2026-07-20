@@ -130,6 +130,49 @@ model Hospital {
   appointments  Appointment[]
   labProviders  LabProvider[]
   labOrders     LabOrder[]
+  doctorRoster  HospitalDoctorRoster[]
+  services      HospitalService[]
+}
+
+// A hospital's doctors, as manually entered by a MedVAULT admin —
+// deliberately NOT the same as the Doctor model, which implies cloud
+// login, KYC, and teleconsult capability. A hospital-employed doctor
+// seen by patients/the WhatsApp agent for an in-person booking has none
+// of that; this is purely a display roster. Chosen over an HMS→cloud
+// push sync for the pilot: real HMS-side risk avoided, at the honest
+// cost of needing manual updates if a hospital's roster changes.
+model HospitalDoctorRoster {
+  id           String   @id @default(uuid()) @db.Uuid
+  hospitalId   String
+  fullName     String
+  specialty    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  hospital     Hospital @relation(fields: [hospitalId], references: [hospitalId])
+  workingHours HospitalDoctorWorkingHours[]
+}
+
+// Same shape as LabWorkingHours, deliberately — one day/time-range model
+// used consistently across labs and hospital-roster doctors, not two
+// near-identical ones.
+model HospitalDoctorWorkingHours {
+  id        String   @id @default(uuid()) @db.Uuid
+  rosterId  String   @db.Uuid
+  dayOfWeek Int      // 0=Sunday .. 6=Saturday
+  startTime String   // "08:00"
+  endTime   String   // "14:00"
+  createdAt DateTime @default(now())
+  roster    HospitalDoctorRoster @relation(fields: [rosterId], references: [id])
+}
+
+// What a hospital offers, e.g. "Emergency Care," "Maternity," "General
+// Consultation" — informational, shown to patients browsing hospitals.
+model HospitalService {
+  id         String   @id @default(uuid()) @db.Uuid
+  hospitalId String
+  name       String
+  createdAt  DateTime @default(now())
+  hospital   Hospital @relation(fields: [hospitalId], references: [hospitalId])
 }
 
 model HospitalInstallation {

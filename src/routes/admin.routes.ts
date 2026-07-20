@@ -179,3 +179,115 @@ adminRouter.get(
     res.json({ success: true, threshold_hours: hours, stale_installations: stale });
   })
 );
+
+/**
+ * Manual hospital roster/services management — Block 7, piece 2.
+ * Deliberately admin-entered rather than pushed from the HMS: avoids
+ * touching that codebase at all, at the honest cost of needing manual
+ * updates if a hospital's roster changes. Right-sized for the pilot's
+ * hospital count; worth automating later if that count grows enough
+ * that manual maintenance becomes a real burden. This is a SEPARATE set
+ * of endpoints from the HMS's own unauthenticated POST /hospitals/register
+ * — that one stays exactly as-is, untouched, since the HMS calls it
+ * before it has any token to authenticate with.
+ */
+
+adminRouter.post(
+  '/hospitals',
+  requireAuth('admin'),
+  asyncHandler(async (req, res) => {
+    const { hospital_id, hospital_code, name, country, region, city } = req.body;
+    if (!hospital_id || !hospital_code || !name) {
+      return res.status(400).json({ success: false, error: 'hospital_id, hospital_code, and name are required' });
+    }
+    const hospital = await prisma.hospital.create({
+      data: { hospitalId: hospital_id, hospitalCode: hospital_code, name, country, region, city }
+    });
+    res.status(201).json({ success: true, hospital });
+  })
+);
+
+adminRouter.get(
+  '/hospitals',
+  requireAuth('admin'),
+  asyncHandler(async (_req, res) => {
+    const hospitals = await prisma.hospital.findMany({
+      include: { doctorRoster: { include: { workingHours: true } }, services: true },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json({ success: true, hospitals });
+  })
+);
+
+adminRouter.post(
+  '/hospitals/:hospitalId/services',
+  requireAuth('admin'),
+  asyncHandler(async (req, res) => {
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ success: false, error: 'name is required' });
+    const service = await prisma.hospitalService.create({ data: { hospitalId: req.params.hospitalId, name } });
+    res.status(201).json({ success: true, service });
+  })
+);
+
+adminRouter.delete(
+  '/hospitals/:hospitalId/services/:id',
+  requireAuth('admin'),
+  asyncHandler(async (req, res) => {
+    await prisma.hospitalService.delete({ where: { id: req.params.id } });
+    res.json({ success: true });
+  })
+);
+
+adminRouter.post(
+  '/hospitals/:hospitalId/doctors',
+  requireAuth('admin'),
+  asyncHandler(async (req, res) => {
+    const { full_name, specialty } = req.body;
+    if (!full_name) return res.status(400).json({ success: false, error: 'full_name is required' });
+    const doctor = await prisma.hospitalDoctorRoster.create({
+      data: { hospitalId: req.params.hospitalId, fullName: full_name, specialty }
+    });
+    res.status(201).json({ success: true, doctor });
+  })
+);
+
+adminRouter.delete(
+  '/hospitals/:hospitalId/doctors/:id',
+  requireAuth('admin'),
+  asyncHandler(async (req, res) => {
+    await prisma.hospitalDoctorWorkingHours.deleteMany({ where: { rosterId: req.params.id } });
+    await prisma.hospitalDoctorRoster.delete({ where: { id: req.params.id } });
+    res.json({ success: true });
+  })
+);
+
+adminRouter.put(
+  '/hospitals/:hospitalId/doctors/:id/working-hours',
+  requireAuth('admin'),
+  asyncHandler(async (req, res) => {
+    const { windows } = req.body;
+    if (!Array.isArray(windows)) {
+      return res.status(400).json({ success: false, error: 'windows[] is required, each {day_of_week, start_time, end_time}' });
+    }
+    for (const w of windows) {
+      if (w.day_of_week < 0 || w.day_of_week > 6) {
+        return res.status(400).json({ success: false, error: 'day_of_week must be 0-6' });
+      }
+      if (!/^\d{2}:\d{2}$/.test(w.start_time) || !/^\d{2}:\d{2}$/.test(w.end_time)) {
+        return res.status(400).json({ success: false, error: 'start_time and end_time must be in HH:MM format' });
+      }
+    }
+    await prisma.$transaction([
+      prisma.hospitalDoctorWorkingHours.deleteMany({ where: { rosterId: req.params.id } }),
+      prisma.hospitalDoctorWorkingHours.createMany({
+        data: windows.map((w: any) => ({ rosterId: req.params.id, dayOfWeek: w.day_of_week, startTime: w.start_time, endTime: w.end_time }))
+      })
+    ]);
+    const workingHours = await prisma.hospitalDoctorWorkingHours.findMany({
+      where: { rosterId: req.params.id },
+      orderBy: { dayOfWeek: 'asc' }
+    });
+    res.json({ success: true, working_hours: workingHours });
+  })
+);

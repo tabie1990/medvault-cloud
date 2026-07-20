@@ -13,6 +13,11 @@ const MODEL = 'claude-haiku-4-5-20251001'; // cheapest capable model — fits a 
 const MAX_TOOL_ITERATIONS = 4;
 const MAX_STORED_TURNS = 8;
 
+// Same reasoning as the day-name fix elsewhere in this file — a tool
+// result should always supply the day name directly, never leave the
+// model to compute one itself from a raw index.
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
 /**
  * Truncates conversation history to the last N genuine exchanges, never
  * mid-way through a tool_use/tool_result pair. A naive `messages.slice(-N)`
@@ -72,7 +77,11 @@ real patient identity, not left unlinked.
 ## Option 1 — Hospital appointment (in-person)
 
 1. Use list_hospitals to show real hospitals (filter by city if they mention one).
-2. Use create_appointment with appointment_type "in_person" and the chosen hospital_id — no doctor
+2. Once a hospital is chosen, use get_hospital_doctors to show who actually works there and roughly
+   when — this is informational only (helps the patient know who they might see), not a bookable
+   slot the way teleconsult availability is. If the roster is empty, say so plainly rather than
+   inventing names or hours.
+3. Use create_appointment with appointment_type "in_person" and the chosen hospital_id — no doctor
    or specific time slot is chosen here; the hospital's own front desk handles scheduling once the
    booking reaches them. Don't ask for a preferred date/time for this option; it's not used.
 
@@ -127,6 +136,15 @@ const tools: Anthropic.Tool[] = [
     input_schema: {
       type: 'object',
       properties: { city: { type: 'string' } }
+    }
+  },
+  {
+    name: 'get_hospital_doctors',
+    description: "Get a specific hospital's roster of doctors and their working hours, so the patient knows who they might see and roughly when before booking an in-person appointment there.",
+    input_schema: {
+      type: 'object',
+      properties: { hospital_id: { type: 'string' } },
+      required: ['hospital_id']
     }
   },
   {
@@ -290,6 +308,26 @@ async function executeTool(
       return JSON.stringify(
         hospitals.map((h: any) => ({ hospital_id: h.hospitalId, name: h.name, city: h.city, region: h.region }))
       );
+    }
+
+    case 'get_hospital_doctors': {
+      const roster = await prisma.hospitalDoctorRoster.findMany({
+        where: { hospitalId: input.hospital_id },
+        include: { workingHours: true }
+      });
+      if (roster.length === 0) return JSON.stringify({ found: true, doctors: [] });
+      return JSON.stringify({
+        found: true,
+        doctors: roster.map((d: any) => ({
+          name: d.fullName,
+          specialty: d.specialty,
+          working_hours: d.workingHours.map((w: any) => ({
+            day_name: DAY_NAMES[w.dayOfWeek],
+            start_time: w.startTime,
+            end_time: w.endTime
+          }))
+        }))
+      });
     }
 
     case 'list_doctors': {

@@ -57,3 +57,37 @@ hospitalsRouter.post(
     });
   })
 );
+
+// Public — for the patient web portal and WhatsApp agent to browse
+// hospitals and see a hospital's roster/services before booking an
+// in-person appointment.
+hospitalsRouter.get(
+  '/',
+  asyncHandler(async (req, res) => {
+    const { city } = req.query;
+    const hospitals = await prisma.hospital.findMany({
+      where: { status: 'active', ...(city ? { city: String(city) } : {}) },
+      take: 50
+    });
+    res.json({ success: true, hospitals });
+  })
+);
+
+hospitalsRouter.get(
+  '/:hospitalId/doctors',
+  asyncHandler(async (req, res) => {
+    const roster = await prisma.hospitalDoctorRoster.findMany({
+      where: { hospitalId: req.params.hospitalId },
+      include: { workingHours: { orderBy: { dayOfWeek: 'asc' } } }
+    });
+    res.json({ success: true, doctors: roster });
+  })
+);
+
+hospitalsRouter.get(
+  '/:hospitalId/services',
+  asyncHandler(async (req, res) => {
+    const services = await prisma.hospitalService.findMany({ where: { hospitalId: req.params.hospitalId } });
+    res.json({ success: true, services });
+  })
+);
