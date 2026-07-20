@@ -120,6 +120,8 @@ model Hospital {
   country       String   @default("Cameroon")
   region        String?
   city          String?
+  latitude      Float?
+  longitude     Float?
   status        HospitalStatus @default(active)
   hospitalMomoNumber  String? // fallback payout target when the doctor has none set
   hospitalMomoNetwork String?

@@ -8,6 +8,7 @@ import { getSlotsForDate, getSlotsForNextDays } from './availability.service.js'
 import { requestPayment, checkPaymentStatus } from './payment.service.js';
 import { requestLabPayment, checkLabPaymentStatus } from './lab-payment.service.js';
 import { generateGlobalPatientId } from './id.service.js';
+import { findHospitalsNear } from './hospital-search.service.js';
 
 const MODEL = 'claude-haiku-4-5-20251001'; // cheapest capable model — fits a bounded conversational task
 const MAX_TOOL_ITERATIONS = 4;
@@ -76,7 +77,12 @@ real patient identity, not left unlinked.
 
 ## Option 1 — Hospital appointment (in-person)
 
-1. Use list_hospitals to show real hospitals (filter by city if they mention one).
+1. Use list_hospitals to show real hospitals (filter by city if they mention one). If they'd rather
+   share their location than type a city, that works too — WhatsApp lets them share their GPS
+   location directly; if you receive a message in the exact form [LOCATION_SHARED lat=... lng=...],
+   that's a shared location, not something to read aloud to them — pass those exact coordinates to
+   find_nearby_hospitals and show what it returns, sorted by real distance. Never estimate
+   coordinates or distances yourself.
 2. Once a hospital is chosen, use get_hospital_doctors to show who actually works there and roughly
    when — this is informational only (helps the patient know who they might see), not a bookable
    slot the way teleconsult availability is. If the roster is empty, say so plainly rather than
@@ -145,6 +151,18 @@ const tools: Anthropic.Tool[] = [
       type: 'object',
       properties: { hospital_id: { type: 'string' } },
       required: ['hospital_id']
+    }
+  },
+  {
+    name: 'find_nearby_hospitals',
+    description: 'Find real hospitals near a specific GPS location, sorted by distance. Use this when the patient has shared their location (a message in the form [LOCATION_SHARED lat=... lng=...]) — pass those exact coordinates through, never estimate or guess coordinates yourself.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        latitude: { type: 'number' },
+        longitude: { type: 'number' }
+      },
+      required: ['latitude', 'longitude']
     }
   },
   {
@@ -326,6 +344,19 @@ async function executeTool(
             start_time: w.startTime,
             end_time: w.endTime
           }))
+        }))
+      });
+    }
+
+    case 'find_nearby_hospitals': {
+      const nearby = await findHospitalsNear(Number(input.latitude), Number(input.longitude), 25);
+      return JSON.stringify({
+        found: true,
+        hospitals: nearby.map((h: any) => ({
+          hospital_id: h.hospitalId,
+          name: h.name,
+          city: h.city,
+          distance_km: Math.round(h.distance_km * 10) / 10
         }))
       });
     }

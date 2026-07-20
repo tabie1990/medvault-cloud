@@ -196,14 +196,43 @@ adminRouter.post(
   '/hospitals',
   requireAuth('admin'),
   asyncHandler(async (req, res) => {
-    const { hospital_id, hospital_code, name, country, region, city } = req.body;
+    const { hospital_id, hospital_code, name, country, region, city, latitude, longitude } = req.body;
     if (!hospital_id || !hospital_code || !name) {
       return res.status(400).json({ success: false, error: 'hospital_id, hospital_code, and name are required' });
     }
     const hospital = await prisma.hospital.create({
-      data: { hospitalId: hospital_id, hospitalCode: hospital_code, name, country, region, city }
+      data: {
+        hospitalId: hospital_id,
+        hospitalCode: hospital_code,
+        name,
+        country,
+        region,
+        city,
+        latitude: latitude !== undefined ? Number(latitude) : undefined,
+        longitude: longitude !== undefined ? Number(longitude) : undefined
+      }
     });
     res.status(201).json({ success: true, hospital });
+  })
+);
+
+// Set/update an existing hospital's coordinates — needed for any hospital
+// registered before location search existed, or created without them.
+adminRouter.patch(
+  '/hospitals/:hospitalId',
+  requireAuth('admin'),
+  asyncHandler(async (req, res) => {
+    const { latitude, longitude, city, region } = req.body;
+    const hospital = await prisma.hospital.update({
+      where: { hospitalId: req.params.hospitalId },
+      data: {
+        ...(latitude !== undefined ? { latitude: Number(latitude) } : {}),
+        ...(longitude !== undefined ? { longitude: Number(longitude) } : {}),
+        ...(city !== undefined ? { city } : {}),
+        ...(region !== undefined ? { region } : {})
+      }
+    });
+    res.json({ success: true, hospital });
   })
 );
 

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../db/prisma.js';
 import { encryptSecret } from '../services/crypto.service.js';
+import { findHospitalsNear } from '../services/hospital-search.service.js';
 import { asyncHandler } from '../middleware/error.middleware.js';
 
 export const hospitalsRouter = Router();
@@ -70,6 +71,25 @@ hospitalsRouter.get(
       take: 50
     });
     res.json({ success: true, hospitals });
+  })
+);
+
+// Public — proximity search by real GPS coordinates, for "hospitals near
+// me" from the web portal's geolocation button or a WhatsApp shared
+// location. Plain Haversine distance in raw SQL — no PostGIS extension
+// needed for a search radius this small (a handful of hospitals per
+// city, not a global-scale geo index).
+hospitalsRouter.get(
+  '/nearby',
+  asyncHandler(async (req, res) => {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    const radiusKm = Math.min(Number(req.query.radius_km ?? 25), 200);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return res.status(400).json({ success: false, error: 'lat and lng query params are required and must be numbers' });
+    }
+    const nearby = await findHospitalsNear(lat, lng, radiusKm);
+    res.json({ success: true, radius_km: radiusKm, hospitals: nearby });
   })
 );
 

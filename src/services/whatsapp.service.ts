@@ -111,6 +111,19 @@ export function parseInboundMessages(body: any): InboundWhatsAppMessage[] {
       for (const msg of change?.value?.messages ?? []) {
         if (msg.type === 'text' && msg.text?.body) {
           messages.push({ from: msg.from, text: msg.text.body, receivingPhoneNumberId });
+        } else if (msg.type === 'location' && msg.location) {
+          // Converted into a synthetic text message rather than adding a
+          // whole separate message-type path through the agent loop — the
+          // system prompt is taught to recognize this exact pattern and
+          // call find_nearby_hospitals with the real coordinates, so the
+          // existing text-based pipeline handles it with no structural
+          // change at all.
+          const { latitude, longitude } = msg.location;
+          messages.push({
+            from: msg.from,
+            text: `[LOCATION_SHARED lat=${latitude} lng=${longitude}]`,
+            receivingPhoneNumberId
+          });
         }
       }
     }
