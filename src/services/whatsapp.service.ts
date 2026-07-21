@@ -47,13 +47,24 @@ export async function sendTemplateMessage(
   to: string,
   templateName: string,
   languageCode: string,
-  params: string[] = []
+  bodyParams: string[] = [],
+  // Authentication-category templates (like the OTP one) come with an
+  // automatic "Copy Code" button that needs the same code passed again,
+  // separately, as its own component — not just reused from the body.
+  // Utility templates (payment/reminder) have no button and don't pass this.
+  buttonParams?: string[]
 ): Promise<void> {
   if (!apiConfigured()) {
-    console.log(`[whatsapp:dev-mode] would send template ${templateName} to ${to}:`, params);
+    console.log(`[whatsapp:dev-mode] would send template ${templateName} to ${to}:`, bodyParams);
     return;
   }
   const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${env.whatsappPhoneNumberId}/messages`;
+  const components = [
+    ...(bodyParams.length ? [{ type: 'body', parameters: bodyParams.map((text) => ({ type: 'text', text })) }] : []),
+    ...(buttonParams?.length
+      ? [{ type: 'button', sub_type: 'url', index: '0', parameters: buttonParams.map((text) => ({ type: 'text', text })) }]
+      : [])
+  ];
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -67,9 +78,7 @@ export async function sendTemplateMessage(
       template: {
         name: templateName,
         language: { code: languageCode },
-        components: params.length
-          ? [{ type: 'body', parameters: params.map((text) => ({ type: 'text', text })) }]
-          : []
+        components
       }
     })
   });
