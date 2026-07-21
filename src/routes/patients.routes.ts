@@ -2,7 +2,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { prisma } from '../db/prisma.js';
 import { issueOtp, verifyOtp } from '../services/otp.service.js';
-import { sendTemplateMessage } from '../services/whatsapp.service.js';
+import { sendTemplateMessage, sendTextMessage } from '../services/whatsapp.service.js';
 import { generateGlobalPatientId } from '../services/id.service.js';
 import { signToken } from '../services/jwt.service.js';
 import { requireAuth, type AuthedRequest } from '../middleware/auth.middleware.js';
@@ -21,12 +21,18 @@ patientsRouter.post(
     if (!phone) return res.status(400).json({ success: false, error: 'phone is required' });
 
     const code = await issueOtp(phone, 'patient_login');
-    // A plain text message here only reaches a patient who's messaged us
-    // within the last 24 hours — for anyone logging in who's never
-    // texted the bot at all (the whole point of a first-time web login),
-    // Meta requires a pre-approved template instead. Found via a real
-    // report: OTP silently never arrived for a genuinely new number.
-    await sendTemplateMessage(phone, 'medvault_otp_code', 'en', [code]);
+    // Template is what's actually needed to reach a brand-new number
+    // (outside any 24-hour window), but a real deploy mistake made this
+    // the *only* path — breaking login entirely for every patient while
+    // the template sat in Meta's review queue, not just the new-number
+    // edge case it was meant to fix. Falls back to the plain message
+    // that's already proven to work, rather than an all-or-nothing swap.
+    try {
+      await sendTemplateMessage(phone, 'medvault_otp', 'en', [code]);
+    } catch (err: any) {
+      console.error('OTP template send failed, falling back to plain message:', err.message);
+      await sendTextMessage(phone, `Your MedVAULT verification code is ${code}. It expires in 5 minutes.`);
+    }
 
     res.json({
       success: true,
