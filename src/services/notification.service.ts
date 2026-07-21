@@ -74,7 +74,7 @@ export async function dispatchPendingNotifications(limit = 20) {
         await sendTemplateMessage(
           phone,
           note.templateType,
-          'en',
+          'en_US',
           Array.isArray(payload.params) ? (payload.params as string[]) : []
         );
       } else if (note.channel === 'push') {

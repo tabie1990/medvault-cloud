@@ -28,7 +28,7 @@ patientsRouter.post(
     // edge case it was meant to fix. Falls back to the plain message
     // that's already proven to work, rather than an all-or-nothing swap.
     try {
-      await sendTemplateMessage(phone, 'medvault_otp', 'en', [code]);
+      await sendTemplateMessage(phone, 'medvault_otp', 'en_US', [code]);
     } catch (err: any) {
       console.error('OTP template send failed, falling back to plain message:', err.message);
       await sendTextMessage(phone, `Your MedVAULT verification code is ${code}. It expires in 5 minutes.`);
