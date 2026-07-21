@@ -452,6 +452,14 @@ async function executeTool(
     case 'check_appointment_status': {
       const appt = await prisma.appointment.findUnique({ where: { appointmentRef: input.appointment_ref } });
       if (!appt) return JSON.stringify({ found: false });
+      // A stale 'pending' read from the database was the actual bug here —
+      // nothing else in the system re-checks Campay unless this does, so a
+      // patient asking "did it go through" got told "pending" forever even
+      // after Campay itself had long since confirmed success.
+      if (appt.paymentStatus === 'pending' && appt.paymentReference) {
+        const fresh = await checkPaymentStatus(appt.id);
+        return JSON.stringify({ found: true, status: appt.status, payment_status: fresh.status });
+      }
       return JSON.stringify({ found: true, status: appt.status, payment_status: appt.paymentStatus });
     }
 

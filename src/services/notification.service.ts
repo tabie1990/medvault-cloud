@@ -46,6 +46,11 @@ async function resolvePatientPhone(globalPatientId: string): Promise<string | nu
   return contact?.waPhoneNumber ?? null;
 }
 
+async function resolveDoctorPhone(doctorId: string): Promise<string | null> {
+  const doctor = await prisma.doctor.findUnique({ where: { id: doctorId } });
+  return doctor?.phone ?? null;
+}
+
 /**
  * Picks up pending notifications and sends them. Called by the in-process
  * poller (jobs/poller.ts) on an interval — no message broker involved.
@@ -61,7 +66,9 @@ export async function dispatchPendingNotifications(limit = 20) {
     try {
       if (note.channel === 'whatsapp') {
         const phone =
-          note.recipientType === 'patient' ? await resolvePatientPhone(note.recipientRef) : null;
+          note.recipientType === 'patient'
+            ? await resolvePatientPhone(note.recipientRef)
+            : await resolveDoctorPhone(note.recipientRef);
         if (!phone) throw new Error('no_phone_on_file');
         const payload = note.payload as Record<string, unknown>;
         await sendTemplateMessage(

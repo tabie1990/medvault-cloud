@@ -1,5 +1,7 @@
 import { prisma } from '../db/prisma.js';
-import { dispatchPendingNotifications } from '../services/notification.service.js';
+import { dispatchPendingNotifications, queueNotification } from '../services/notification.service.js';
+import { checkPaymentStatus } from '../services/payment.service.js';
+import { createTelemedicineSession, createRoomForSession } from '../services/telemedicine.service.js';
 import { logError } from '../services/error-log.service.js';
 import crypto from 'crypto';
 
@@ -150,11 +152,58 @@ async function requeueStaleUnackedEvents() {
   });
 }
 
+/**
+ * Closes the actual gap found via real testing: nothing previously
+ * re-checked Campay after the initial payment request, so a payment that
+ * genuinely cleared could sit showing "pending" forever unless someone
+ * happened to ask again. This polls every pending teleconsult payment,
+ * and the moment one clears: creates the telemedicine session and room
+ * (same path the doctor's own "Start session" button uses — this isn't a
+ * separate room-creation mechanism, just triggering the existing one
+ * automatically instead of waiting for a manual click), then notifies
+ * both patient and doctor with the link.
+ */
+async function checkPendingTeleconsultPayments() {
+  const pending = await prisma.appointment.findMany({
+    where: { appointmentType: 'teleconsult', paymentStatus: 'pending', paymentReference: { not: null } },
+    take: 20
+  });
+
+  for (const appt of pending) {
+    const result = await checkPaymentStatus(appt.id);
+    if (result.status !== 'paid') continue; // still pending or failed — nothing to do yet
+
+    if (!appt.doctorId) continue; // no doctor assigned yet — can't create a session without one
+
+    const session = await createTelemedicineSession(appt.id, appt.doctorId);
+    const withRoom = await createRoomForSession(session.id);
+    if (!withRoom.roomUrl) continue;
+
+    if (appt.globalPatientId) {
+      await queueNotification({
+        channel: 'whatsapp',
+        recipientType: 'patient',
+        recipientRef: appt.globalPatientId,
+        templateType: 'teleconsult_payment_confirmed',
+        payload: { params: [appt.appointmentRef, withRoom.roomUrl] }
+      });
+    }
+    await queueNotification({
+      channel: 'whatsapp',
+      recipientType: 'doctor',
+      recipientRef: appt.doctorId,
+      templateType: 'teleconsult_payment_confirmed',
+      payload: { params: [appt.appointmentRef, withRoom.roomUrl] }
+    });
+  }
+}
+
 export function startPollers() {
   setInterval(() => fanOutNewAppointments().catch((e) => logError('poller:appointments', e)), INTERVAL_MS);
   setInterval(() => fanOutLabOrderEvents().catch((e) => logError('poller:lab-orders', e)), INTERVAL_MS);
   setInterval(() => finalizeHospitalPushedEvents().catch((e) => logError('poller:sync-events', e)), INTERVAL_MS);
   setInterval(() => requeueStaleUnackedEvents().catch((e) => logError('poller:sync-requeue', e)), INTERVAL_MS);
   setInterval(() => dispatchPendingNotifications().catch((e) => logError('poller:notifications', e)), INTERVAL_MS);
+  setInterval(() => checkPendingTeleconsultPayments().catch((e) => logError('poller:payment-check', e)), INTERVAL_MS);
   console.log('In-process pollers started (appointments, lab orders, sync events, notifications).');
 }
