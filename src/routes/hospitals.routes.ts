@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '../db/prisma.js';
 import { encryptSecret } from '../services/crypto.service.js';
 import { findHospitalsNear } from '../services/hospital-search.service.js';
+import { getSlotsForNextDays as getHospitalRosterSlotsForNextDays } from '../services/hospital-roster-availability.service.js';
 import { asyncHandler } from '../middleware/error.middleware.js';
 
 export const hospitalsRouter = Router();
@@ -93,6 +94,19 @@ hospitalsRouter.get(
   })
 );
 
+// Registered after /nearby deliberately — a literal path must come before
+// a parameterized one on the same router, or Express matches the
+// parameterized one first (treating "nearby" as if it were a real
+// hospitalId). Same lesson learned the hard way earlier this project.
+hospitalsRouter.get(
+  '/:hospitalId',
+  asyncHandler(async (req, res) => {
+    const hospital = await prisma.hospital.findUnique({ where: { hospitalId: req.params.hospitalId } });
+    if (!hospital) return res.status(404).json({ success: false, error: 'hospital_not_found' });
+    res.json({ success: true, hospital });
+  })
+);
+
 hospitalsRouter.get(
   '/:hospitalId/doctors',
   asyncHandler(async (req, res) => {
@@ -101,6 +115,19 @@ hospitalsRouter.get(
       include: { workingHours: { orderBy: { dayOfWeek: 'asc' } } }
     });
     res.json({ success: true, doctors: roster });
+  })
+);
+
+hospitalsRouter.get(
+  '/:hospitalId/doctors/:rosterId/slots',
+  asyncHandler(async (req, res) => {
+    const days = Math.min(Number(req.query.days ?? 7), 14);
+    try {
+      const slots = await getHospitalRosterSlotsForNextDays(req.params.rosterId, days);
+      res.json({ success: true, slots });
+    } catch {
+      res.status(404).json({ success: false, error: 'roster_doctor_not_found' });
+    }
   })
 );
 

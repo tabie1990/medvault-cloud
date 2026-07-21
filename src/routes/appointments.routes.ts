@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../db/prisma.js';
 import { createAppointment, listPendingAppointmentsForHospital } from '../services/appointment.service.js';
+import { getSlotsForDate as getHospitalRosterSlotsForDate } from '../services/hospital-roster-availability.service.js';
 import { requestPayment, checkPaymentStatus, markPaid, splitPayout } from '../services/payment.service.js';
 import { requireAuth, type AuthedRequest } from '../middleware/auth.middleware.js';
 import { asyncHandler } from '../middleware/error.middleware.js';
@@ -27,11 +28,27 @@ appointmentsRouter.post(
     if (!b.appointment_type || !b.source) {
       return res.status(400).json({ success: false, error: 'appointment_type and source are required' });
     }
+    // Same discipline as the WhatsApp agent's own tool-execution
+    // validation — never let a client book a hospital-roster slot that
+    // isn't actually open, whether that client is careless or malicious.
+    // A pre-existing gap here (this endpoint had no slot validation at
+    // all before) is being closed for the roster case specifically,
+    // since that's what's being added right now.
+    if (b.appointment_type === 'in_person' && b.hospital_doctor_roster_id) {
+      if (!b.requested_date || !b.requested_time) {
+        return res.status(400).json({ success: false, error: 'requested_date_and_requested_time_required_when_a_roster_doctor_is_chosen' });
+      }
+      const realSlots = await getHospitalRosterSlotsForDate(b.hospital_doctor_roster_id, b.requested_date);
+      if (!realSlots.includes(b.requested_time)) {
+        return res.status(409).json({ success: false, error: 'requested_time_not_available' });
+      }
+    }
     try {
       const appointment = await createAppointment({
         globalPatientId: b.global_patient_id,
         hospitalId: b.hospital_id,
         doctorId: b.doctor_id,
+        hospitalDoctorRosterId: b.hospital_doctor_roster_id,
         appointmentType: b.appointment_type,
         requestedDate: b.requested_date,
         requestedTime: b.requested_time,
