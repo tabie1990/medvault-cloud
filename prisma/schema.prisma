@@ -296,6 +296,10 @@ model Appointment {
   paymentReference  String? // Campay's transaction reference
   paymentAmount     Decimal?
   paymentPhone      String? // the payer's MoMo number, not necessarily the patient's own
+  // Set once the 30-minutes-before reminder actually goes out — the guard
+  // against sending it again on every 10-second poll cycle for the same
+  // appointment.
+  reminderSentAt    DateTime?
   syncedToHospitalAt DateTime? // NULL = not yet fanned out to the hospital's sync queue.
                                // Dedicated column, not a JSON payload marker — a JSON-path
                                // "equals: true" filter silently excludes rows where the key

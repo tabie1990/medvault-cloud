@@ -198,6 +198,55 @@ async function checkPendingTeleconsultPayments() {
   }
 }
 
+/**
+ * Reminds both patient and doctor 30 minutes before a paid teleconsult.
+ * Checked every cycle but only ever sends once per appointment, guarded
+ * by reminderSentAt — a 10-second poll interval would otherwise fire
+ * this dozens of times for the same appointment inside that half hour.
+ */
+async function sendUpcomingAppointmentReminders() {
+  const now = new Date();
+  const windowStart = new Date(now.getTime() + 25 * 60 * 1000); // 25-35 min out
+  const windowEnd = new Date(now.getTime() + 35 * 60 * 1000);
+
+  const upcoming = await prisma.appointment.findMany({
+    where: {
+      appointmentType: 'teleconsult',
+      paymentStatus: 'paid',
+      status: { in: ['pending', 'confirmed'] },
+      requestedDate: { gte: windowStart, lte: windowEnd },
+      reminderSentAt: null
+    },
+    take: 20
+  });
+
+  for (const appt of upcoming) {
+    if (!appt.doctorId) continue;
+    const session = await prisma.telemedicineSession.findUnique({ where: { appointmentId: appt.id } });
+    const roomUrl = session?.roomUrl;
+    if (!roomUrl) continue; // no room yet — nothing useful to remind about
+
+    if (appt.globalPatientId) {
+      await queueNotification({
+        channel: 'whatsapp',
+        recipientType: 'patient',
+        recipientRef: appt.globalPatientId,
+        templateType: 'teleconsult_reminder_30min',
+        payload: { params: [appt.appointmentRef, roomUrl] }
+      });
+    }
+    await queueNotification({
+      channel: 'whatsapp',
+      recipientType: 'doctor',
+      recipientRef: appt.doctorId,
+      templateType: 'teleconsult_reminder_30min',
+      payload: { params: [appt.appointmentRef, roomUrl] }
+    });
+
+    await prisma.appointment.update({ where: { id: appt.id }, data: { reminderSentAt: now } });
+  }
+}
+
 export function startPollers() {
   setInterval(() => fanOutNewAppointments().catch((e) => logError('poller:appointments', e)), INTERVAL_MS);
   setInterval(() => fanOutLabOrderEvents().catch((e) => logError('poller:lab-orders', e)), INTERVAL_MS);
@@ -205,5 +254,6 @@ export function startPollers() {
   setInterval(() => requeueStaleUnackedEvents().catch((e) => logError('poller:sync-requeue', e)), INTERVAL_MS);
   setInterval(() => dispatchPendingNotifications().catch((e) => logError('poller:notifications', e)), INTERVAL_MS);
   setInterval(() => checkPendingTeleconsultPayments().catch((e) => logError('poller:payment-check', e)), INTERVAL_MS);
+  setInterval(() => sendUpcomingAppointmentReminders().catch((e) => logError('poller:reminders', e)), INTERVAL_MS);
   console.log('In-process pollers started (appointments, lab orders, sync events, notifications).');
 }
