@@ -67,14 +67,14 @@ const tools: Anthropic.Tool[] = [
   {
     name: 'register_or_identify_patient',
     description:
-      "Identify the patient by their WhatsApp number, or register them if this is their first time. Always call this early in a conversation, before booking anything — the phone number itself is already known from context, don't ask for it. Do ask for full name (and date of birth if they're willing to share it). If they already have an account, this returns their existing MedVAULT ID and nothing changes; tell a first-timer their new ID so they know it for next time.",
+      "Identify the patient by their WhatsApp number, or register them if this is their first time. Always call this early in a conversation, before booking anything — the phone number itself is already known from context, don't ask for it. Ask for full name AND date of birth together in one message before calling this — both are required to correctly identify or register the patient. If they already have an account, this returns their existing MedVAULT ID and nothing changes; tell a first-timer their new ID so they know it for next time.",
     input_schema: {
       type: 'object',
       properties: {
         full_name: { type: 'string' },
-        dob: { type: 'string', description: 'YYYY-MM-DD, optional' }
+        dob: { type: 'string', description: 'YYYY-MM-DD' }
       },
-      required: ['full_name']
+      required: ['full_name', 'dob']
     }
   },
   {
@@ -371,7 +371,7 @@ async function executeTool(
           name: d.fullName,
           specialty: d.specialty,
           consultation_types: d.consultationTypes,
-          teleconsult_fee: d.teleconsultFee
+          teleconsult_fee: d.teleconsultFee ? Number(d.teleconsultFee) : null
         }))
       );
     }
@@ -487,7 +487,7 @@ async function executeTool(
           name: p.name,
           city: p.city,
           service_type: p.serviceType,
-          tests: p.services.map((s: any) => ({ id: s.id, name: s.testName, price: s.basePrice }))
+          tests: p.services.map((s: any) => ({ id: s.id, name: s.testName, price: Number(s.basePrice) }))
         }))
       );
     }
@@ -503,7 +503,7 @@ async function executeTool(
         scheduledTime: input.scheduled_time,
         source: 'whatsapp_ai'
       });
-      return JSON.stringify({ order_ref: order?.orderRef, total_cost: order?.totalCost, status: order?.status });
+      return JSON.stringify({ order_ref: order?.orderRef, total_cost: order?.totalCost ? Number(order.totalCost) : null, status: order?.status });
     }
 
     case 'check_lab_order_status': {
