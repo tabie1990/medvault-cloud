@@ -18,13 +18,18 @@ export const adminRouter = Router();
 adminRouter.get(
   '/kyc/pending',
   requireAuth('admin'),
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
+    // Defaults to pending-only, preserving the original behavior — pass
+    // ?status=all to also see already-approved/rejected doctors and labs
+    // alongside those still awaiting review.
+    const status = (req.query.status as string) ?? 'pending';
+    const statusFilter = status === 'all' ? {} : { verificationStatus: status as any };
     const doctors = await prisma.doctor.findMany({
-      where: { verificationStatus: 'pending', kycSubmittedAt: { not: null } },
+      where: { ...statusFilter, kycSubmittedAt: { not: null } },
       orderBy: { kycSubmittedAt: 'asc' }
     });
     const labProviders = await prisma.labProvider.findMany({
-      where: { verificationStatus: 'pending', kycSubmittedAt: { not: null } },
+      where: { ...statusFilter, kycSubmittedAt: { not: null } },
       orderBy: { kycSubmittedAt: 'asc' }
     });
     res.json({
@@ -155,8 +160,25 @@ adminRouter.get(
   requireAuth('admin'),
   asyncHandler(async (req, res) => {
     const limit = Math.min(Number(req.query.limit ?? 50), 200);
-    const errors = await prisma.errorLog.findMany({ orderBy: { createdAt: 'desc' }, take: limit });
+    // Hides resolved entries by default so the feed reflects what's
+    // actually still outstanding — pass ?include_resolved=true to see
+    // everything, including what's already been dealt with.
+    const includeResolved = req.query.include_resolved === 'true';
+    const errors = await prisma.errorLog.findMany({
+      where: includeResolved ? {} : { resolvedAt: null },
+      orderBy: { createdAt: 'desc' },
+      take: limit
+    });
     res.json({ success: true, errors });
+  })
+);
+
+adminRouter.post(
+  '/errors/:id/resolve',
+  requireAuth('admin'),
+  asyncHandler(async (req, res) => {
+    const entry = await prisma.errorLog.update({ where: { id: req.params.id }, data: { resolvedAt: new Date() } });
+    res.json({ success: true, error: entry });
   })
 );
 

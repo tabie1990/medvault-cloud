@@ -87,7 +87,24 @@ appointmentsRouter.get(
       include: { telemedicineSession: true },
       orderBy: { requestedDate: 'asc' }
     });
-    res.json({ success: true, appointments });
+    // Appointment.globalPatientId is a loose string, not a formal Prisma
+    // relation — a real, pre-existing gap the doctor's own view never
+    // actually surfaced (name/DOB/phone), only the raw ID. Batched into
+    // one query rather than N+1 lookups per appointment.
+    const patientIds = [...new Set(appointments.map((a: any) => a.globalPatientId).filter(Boolean))];
+    const patients = await prisma.globalPatient.findMany({ where: { globalPatientId: { in: patientIds as string[] } } });
+    const patientsById = new Map<string, any>(patients.map((p: any) => [p.globalPatientId, p]));
+    const withPatientDetails = appointments.map((a: any) => ({
+      ...a,
+      patient: a.globalPatientId
+        ? {
+            fullName: patientsById.get(a.globalPatientId)?.fullName ?? null,
+            dob: patientsById.get(a.globalPatientId)?.dob ?? null,
+            phone: patientsById.get(a.globalPatientId)?.primaryPhone ?? null
+          }
+        : null
+    }));
+    res.json({ success: true, appointments: withPatientDetails });
   })
 );
 

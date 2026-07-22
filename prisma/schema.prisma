@@ -649,10 +649,11 @@ model OtpCode {
 // Scoped initially to the unattended background pollers, since those are
 // exactly the kind of failure an admin has no other way to notice.
 model ErrorLog {
-  id        String   @id @default(uuid()) @db.Uuid
-  source    String   // e.g. 'poller:appointments', 'poller:lab-orders'
-  message   String
-  createdAt DateTime @default(now())
+  id         String    @id @default(uuid()) @db.Uuid
+  source     String    // e.g. 'poller:appointments', 'escalation:whatsapp'
+  message    String
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
 
   @@index([createdAt])
 }

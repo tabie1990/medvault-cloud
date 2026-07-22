@@ -16,6 +16,7 @@ import { requestPayment, checkPaymentStatus } from './payment.service.js';
 import { requestLabPayment, checkLabPaymentStatus } from './lab-payment.service.js';
 import { generateGlobalPatientId } from './id.service.js';
 import { findHospitalsNear } from './hospital-search.service.js';
+import { logError } from './error-log.service.js';
 
 const MODEL = 'claude-haiku-4-5-20251001'; // cheapest capable model — fits a bounded conversational task
 const MAX_TOOL_ITERATIONS = 4;
@@ -528,6 +529,12 @@ async function executeTool(
     }
 
     case 'escalate_to_human': {
+      // Previously did nothing at all beyond telling the model it had
+      // "handed off" — no admin ever actually saw this. Reuses the same
+      // ErrorLog + resolve mechanism as background errors, since both
+      // are "something a human needs to see and mark done" — not a
+      // separate model/UI just for this.
+      await logError(`escalation:whatsapp:${contact.waPhoneNumber}`, new Error(input.reason ?? 'No reason given'));
       return JSON.stringify({ escalated: true });
     }
 
