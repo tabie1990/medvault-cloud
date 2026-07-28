@@ -81,7 +81,7 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: 'list_hospitals',
-    description: 'List hospitals a patient can book an in-person appointment at, optionally filtered by city.',
+    description: "List hospitals a patient can book an in-person appointment at, optionally filtered by city. Each result includes that hospital's listed services (e.g. 'Hepatitis B Testing') — check these before telling a patient a service isn't available anywhere in a city.",
     input_schema: {
       type: 'object',
       properties: { city: { type: 'string' } }
@@ -277,6 +277,7 @@ async function executeTool(
     case 'list_hospitals': {
       const hospitals = await prisma.hospital.findMany({
         where: { status: 'active', ...(input.city ? { city: { contains: input.city, mode: 'insensitive' } } : {}) },
+        include: { services: true },
         take: 15
       });
       return JSON.stringify(
@@ -285,7 +286,8 @@ async function executeTool(
           name: h.name,
           city: h.city,
           region: h.region,
-          flat_booking_fee: h.flatBookingFee ? Number(h.flatBookingFee) : null
+          flat_booking_fee: h.flatBookingFee ? Number(h.flatBookingFee) : null,
+          services: h.services.map((s: any) => s.name)
         }))
       );
     }
