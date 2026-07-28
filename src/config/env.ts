@@ -23,6 +23,13 @@ export const env = {
   whatsappPhoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID ?? '',
 
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
+  openaiApiKey: process.env.OPENAI_API_KEY ?? '',
+  // 'anthropic' or 'openai' — lets the WhatsApp agent run on either
+  // provider for real cost/quality comparison, without needing two
+  // separate deployments. Defaults to anthropic (the proven, tested
+  // path) if unset or misspelled, rather than silently falling through
+  // to something unexpected.
+  aiProvider: (process.env.AI_PROVIDER === 'openai' ? 'openai' : 'anthropic') as 'anthropic' | 'openai',
 
   dailyApiKey: process.env.DAILY_API_KEY ?? '',
   dailySubdomain: process.env.DAILY_SUBDOMAIN ?? '',

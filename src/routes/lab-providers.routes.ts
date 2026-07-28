@@ -63,13 +63,14 @@ labProvidersRouter.patch(
     if (provider.ownerDoctorId !== req.user!.sub) {
       return res.status(403).json({ success: false, error: 'not_the_owner_of_this_lab' });
     }
-    const { momo_number, momo_network, home_service_fee } = req.body;
+    const { momo_number, momo_network, home_service_fee, email } = req.body;
     const updated = await prisma.labProvider.update({
       where: { id: req.params.id },
       data: {
         ...(momo_number !== undefined ? { momoNumber: momo_number } : {}),
         ...(momo_network !== undefined ? { momoNetwork: momo_network } : {}),
-        ...(home_service_fee !== undefined ? { homeServiceFee: Number(home_service_fee) } : {})
+        ...(home_service_fee !== undefined ? { homeServiceFee: Number(home_service_fee) } : {}),
+        ...(email !== undefined ? { email } : {})
       }
     });
     res.json({ success: true, lab_provider: updated });

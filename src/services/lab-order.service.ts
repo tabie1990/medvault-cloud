@@ -65,6 +65,21 @@ export async function createLabOrder(input: CreateLabOrderInput) {
     return created;
   });
 
+  // Same reasoning as appointment.service.ts — best-effort, queued
+  // through the dispatcher, never blocks the actual booking.
+  if (labProvider.email) {
+    await queueNotification({
+      channel: 'email',
+      recipientType: 'lab_provider',
+      recipientRef: input.labProviderId,
+      templateType: 'appointment_confirmation',
+      payload: {
+        subject: `New lab order: ${order.orderRef}`,
+        body: `A new lab order has been placed.\n\nReference: ${order.orderRef}\nServices: ${services.map((s: any) => s.testName).join(', ')}\n\nPlease check your MedVAULT dashboard for full details.`
+      }
+    }).catch(() => {});
+  }
+
   return prisma.labOrder.findUnique({
     where: { id: order.id },
     include: { items: { include: { labService: true } }, labProvider: true }

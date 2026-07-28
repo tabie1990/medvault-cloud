@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -18,7 +19,8 @@ import { generateGlobalPatientId } from './id.service.js';
 import { findHospitalsNear } from './hospital-search.service.js';
 import { logError } from './error-log.service.js';
 
-const MODEL = 'claude-haiku-4-5-20251001'; // cheapest capable model — fits a bounded conversational task
+const MODEL = 'claude-haiku-4-5-20251001'; // cheapest capable Anthropic model — fits a bounded conversational task
+const OPENAI_MODEL = 'gpt-4o-mini'; // chosen specifically for cost comparison against Haiku, still handles tool-calling well
 const MAX_TOOL_ITERATIONS = 4;
 const MAX_STORED_TURNS = 8;
 
@@ -549,9 +551,88 @@ async function executeTool(
  * functions the HTTP routes use — the agent never gets its own write path
  * into the database.
  */
+// OpenAI's function-calling format wraps the same JSON Schema shape
+// Anthropic uses for input_schema — the schema content itself doesn't
+// need converting, just the wrapper around it.
+function toOpenAITools(anthropicTools: Anthropic.Tool[]): OpenAI.Chat.ChatCompletionTool[] {
+  return anthropicTools.map((t) => ({
+    type: 'function',
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema as Record<string, unknown>
+    }
+  }));
+}
+
+/**
+ * Mirrors the Anthropic loop below as closely as the two APIs allow.
+ * Genuinely different in a few unavoidable ways: OpenAI puts the system
+ * prompt in the messages array itself rather than a separate top-level
+ * param, and each tool result is its own separate 'tool' role message
+ * rather than several bundled into one 'user' message the way Anthropic
+ * does it. executeTool() itself needed zero changes — it was already
+ * provider-agnostic (name/input/contact in, string result out).
+ */
+async function runOpenAIAgent(
+  contact: { id: string; globalPatientId: string | null; waPhoneNumber: string },
+  priorTurns: OpenAI.Chat.ChatCompletionMessageParam[],
+  userText: string
+): Promise<{ finalText: string; messages: OpenAI.Chat.ChatCompletionMessageParam[]; contact: typeof contact }> {
+  const openai = new OpenAI({ apiKey: env.openaiApiKey });
+  const openaiTools = toOpenAITools(tools);
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    ...priorTurns,
+    { role: 'user', content: userText }
+  ];
+
+  let finalText = '';
+  for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+    const response = await openai.chat.completions.create({
+      model: OPENAI_MODEL,
+      max_tokens: 512,
+      tools: openaiTools,
+      messages
+    });
+
+    const choice = response.choices[0].message;
+    const toolCalls = choice.tool_calls ?? [];
+
+    if (toolCalls.length === 0) {
+      finalText = choice.content ?? '';
+      messages.push({ role: 'assistant', content: finalText });
+      break;
+    }
+
+    messages.push({ role: 'assistant', content: choice.content, tool_calls: toolCalls });
+
+    for (const toolCall of toolCalls) {
+      if (toolCall.type !== 'function') continue;
+      const input = JSON.parse(toolCall.function.arguments || '{}');
+      const result = await executeTool(toolCall.function.name, input, contact);
+      console.log(`[ai-agent:tool:openai] ${toolCall.function.name}(${JSON.stringify(input)}) -> ${result}`);
+      messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
+
+      if (toolCall.function.name === 'register_or_identify_patient') {
+        const refreshed = await prisma.whatsAppContact.findUnique({ where: { id: contact.id } });
+        if (refreshed) contact = refreshed;
+      }
+    }
+  }
+
+  // Strip the system message back out before persisting — it's re-added
+  // fresh from SYSTEM_PROMPT every call, storing it would just be dead
+  // weight (and would go stale the moment the prompt file changes).
+  const withoutSystem = messages.filter((m) => m.role !== 'system');
+  return { finalText, messages: withoutSystem, contact };
+}
+
 export async function handleIncomingWhatsAppMessage(phone: string, text: string): Promise<void> {
-  if (!env.anthropicApiKey) {
-    console.log(`[ai-agent:dev-mode] no ANTHROPIC_API_KEY set — echoing message from ${phone}: ${text}`);
+  const activeProvider = env.aiProvider;
+  const apiKeyConfigured = activeProvider === 'openai' ? !!env.openaiApiKey : !!env.anthropicApiKey;
+  if (!apiKeyConfigured) {
+    console.log(`[ai-agent:dev-mode] no API key set for provider '${activeProvider}' — echoing message from ${phone}: ${text}`);
     await sendTextMessage(phone, "Thanks for your message — our assistant isn't configured yet. A staff member will follow up.");
     return;
   }
@@ -562,57 +643,72 @@ export async function handleIncomingWhatsAppMessage(phone: string, text: string)
     create: { waPhoneNumber: phone }
   });
 
-  const priorTurns = Array.isArray((contact.conversationState as any)?.turns)
-    ? ((contact.conversationState as any).turns as Anthropic.MessageParam[])
-    : [];
+  const storedState = (contact.conversationState as any) ?? {};
+  // If the stored conversation was built on the other provider, start
+  // fresh rather than attempt to convert formats — the two APIs' tool-
+  // call semantics differ enough that a faithful conversion isn't worth
+  // the complexity for what is, right now, an A/B cost comparison, not a
+  // guarantee to preserve history across a live provider switch.
+  const priorTurns = storedState.provider === activeProvider && Array.isArray(storedState.turns) ? storedState.turns : [];
 
-  const anthropic = new Anthropic({ apiKey: env.anthropicApiKey });
-  const messages: Anthropic.MessageParam[] = [...priorTurns, { role: 'user', content: text }];
+  let finalText: string;
+  let messagesToStore: unknown;
 
-  let finalText = '';
-  for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-    const response = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 512,
-      system: SYSTEM_PROMPT,
-      tools,
-      messages
-    });
+  if (activeProvider === 'openai') {
+    const result = await runOpenAIAgent(
+      { id: contact.id, globalPatientId: contact.globalPatientId, waPhoneNumber: contact.waPhoneNumber },
+      priorTurns,
+      text
+    );
+    finalText = result.finalText;
+    messagesToStore = result.messages;
+    const refreshedFull = await prisma.whatsAppContact.findUnique({ where: { id: result.contact.id } });
+    if (refreshedFull) contact = refreshedFull;
+  } else {
+    const anthropic = new Anthropic({ apiKey: env.anthropicApiKey });
+    const messages: Anthropic.MessageParam[] = [...priorTurns, { role: 'user', content: text }];
 
-    const toolUses = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
-
-    if (toolUses.length === 0) {
-      finalText = response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('\n');
-      messages.push({ role: 'assistant', content: response.content });
-      break;
-    }
-
-    messages.push({ role: 'assistant', content: response.content });
-
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-    for (const toolUse of toolUses) {
-      const result = await executeTool(toolUse.name, toolUse.input, {
-        id: contact.id,
-        globalPatientId: contact.globalPatientId,
-        waPhoneNumber: contact.waPhoneNumber
+    finalText = '';
+    for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+      const response = await anthropic.messages.create({
+        model: MODEL,
+        max_tokens: 512,
+        system: SYSTEM_PROMPT,
+        tools,
+        messages
       });
-      console.log(`[ai-agent:tool] ${toolUse.name}(${JSON.stringify(toolUse.input)}) -> ${result}`);
-      toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: result });
 
-      // A tool later in this same turn (e.g. create_appointment right
-      // after registering) needs the fresh ID, not the stale one this
-      // turn started with — re-read the contact rather than trust
-      // whatever local state might exist, since the tool itself is the
-      // one place that actually wrote it to the database.
-      if (toolUse.name === 'register_or_identify_patient') {
-        const refreshed = await prisma.whatsAppContact.findUnique({ where: { id: contact.id } });
-        if (refreshed) contact = refreshed;
+      const toolUses = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
+
+      if (toolUses.length === 0) {
+        finalText = response.content
+          .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+          .map((b) => b.text)
+          .join('\n');
+        messages.push({ role: 'assistant', content: response.content });
+        break;
       }
+
+      messages.push({ role: 'assistant', content: response.content });
+
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+      for (const toolUse of toolUses) {
+        const result = await executeTool(toolUse.name, toolUse.input, {
+          id: contact.id,
+          globalPatientId: contact.globalPatientId,
+          waPhoneNumber: contact.waPhoneNumber
+        });
+        console.log(`[ai-agent:tool] ${toolUse.name}(${JSON.stringify(toolUse.input)}) -> ${result}`);
+        toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: result });
+
+        if (toolUse.name === 'register_or_identify_patient') {
+          const refreshed = await prisma.whatsAppContact.findUnique({ where: { id: contact.id } });
+          if (refreshed) contact = refreshed;
+        }
+      }
+      messages.push({ role: 'user', content: toolResults });
     }
-    messages.push({ role: 'user', content: toolResults });
+    messagesToStore = truncateConversation(messages, MAX_STORED_TURNS);
   }
 
   if (!finalText) {
@@ -623,6 +719,6 @@ export async function handleIncomingWhatsAppMessage(phone: string, text: string)
 
   await prisma.whatsAppContact.update({
     where: { id: contact.id },
-    data: { conversationState: { turns: truncateConversation(messages, MAX_STORED_TURNS) } as any }
+    data: { conversationState: { provider: activeProvider, turns: messagesToStore } as any }
   });
 }

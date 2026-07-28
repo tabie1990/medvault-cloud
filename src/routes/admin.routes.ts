@@ -245,7 +245,7 @@ adminRouter.patch(
   '/hospitals/:hospitalId',
   requireAuth('admin'),
   asyncHandler(async (req, res) => {
-    const { latitude, longitude, city, region, flat_booking_fee, hospital_momo_number, hospital_momo_network, appointment_slot_minutes } = req.body;
+    const { latitude, longitude, city, region, flat_booking_fee, hospital_momo_number, hospital_momo_network, appointment_slot_minutes, email } = req.body;
     const hospital = await prisma.hospital.update({
       where: { hospitalId: req.params.hospitalId },
       data: {
@@ -256,7 +256,8 @@ adminRouter.patch(
         ...(flat_booking_fee !== undefined ? { flatBookingFee: Number(flat_booking_fee) } : {}),
         ...(hospital_momo_number !== undefined ? { hospitalMomoNumber: hospital_momo_number } : {}),
         ...(hospital_momo_network !== undefined ? { hospitalMomoNetwork: hospital_momo_network } : {}),
-        ...(appointment_slot_minutes !== undefined ? { appointmentSlotMinutes: Number(appointment_slot_minutes) } : {})
+        ...(appointment_slot_minutes !== undefined ? { appointmentSlotMinutes: Number(appointment_slot_minutes) } : {}),
+        ...(email !== undefined ? { email } : {})
       }
     });
     res.json({ success: true, hospital });

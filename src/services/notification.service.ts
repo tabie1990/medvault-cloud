@@ -1,5 +1,6 @@
 import { prisma } from '../db/prisma.js';
 import { sendTemplateMessage } from './whatsapp.service.js';
+import { sendPlainEmail } from './email.service.js';
 import { env } from '../config/env.js';
 
 // Mirrors the NotificationChannel enum in prisma/schema.prisma as a plain
@@ -9,8 +10,8 @@ export type NotificationChannel = 'whatsapp' | 'push' | 'sms' | 'email';
 
 interface CreateNotificationInput {
   channel: NotificationChannel;
-  recipientType: 'patient' | 'doctor';
-  recipientRef: string; // globalPatientId or doctor id
+  recipientType: 'patient' | 'doctor' | 'lab_provider' | 'hospital';
+  recipientRef: string; // globalPatientId, doctor id, lab provider id, or hospitalId
   templateType: string;
   payload: Record<string, unknown>;
 }
@@ -51,6 +52,22 @@ async function resolveDoctorPhone(doctorId: string): Promise<string | null> {
   return doctor?.phone ?? null;
 }
 
+async function resolveEmail(recipientType: string, recipientRef: string): Promise<string | null> {
+  if (recipientType === 'doctor') {
+    const doctor = await prisma.doctor.findUnique({ where: { id: recipientRef } });
+    return doctor?.email ?? null;
+  }
+  if (recipientType === 'lab_provider') {
+    const lab = await prisma.labProvider.findUnique({ where: { id: recipientRef } });
+    return lab?.email ?? null;
+  }
+  if (recipientType === 'hospital') {
+    const hospital = await prisma.hospital.findUnique({ where: { hospitalId: recipientRef } });
+    return hospital?.email ?? null;
+  }
+  return null;
+}
+
 /**
  * Picks up pending notifications and sends them. Called by the in-process
  * poller (jobs/poller.ts) on an interval — no message broker involved.
@@ -85,6 +102,11 @@ export async function dispatchPendingNotifications(limit = 20) {
         if (!device) throw new Error('no_device_token_on_file');
         const payload = note.payload as { title?: string; body?: string };
         await sendPush(device.pushToken, payload.title ?? 'MedVAULT', payload.body ?? '');
+      } else if (note.channel === 'email') {
+        const to = await resolveEmail(note.recipientType, note.recipientRef);
+        if (!to) throw new Error('no_email_on_file');
+        const payload = note.payload as { subject?: string; body?: string };
+        await sendPlainEmail(to, payload.subject ?? 'MedVAULT notification', payload.body ?? '');
       } else {
         throw new Error(`unsupported_channel_${note.channel}`);
       }

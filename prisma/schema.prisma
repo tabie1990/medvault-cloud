@@ -125,6 +125,7 @@ model Hospital {
   status        HospitalStatus @default(active)
   hospitalMomoNumber  String? // fallback payout target when the doctor has none set
   hospitalMomoNetwork String?
+  email               String? // for appointment confirmation emails — added on request, never existed before
   // Chosen over per-doctor consultation fees: one flat fee per hospital,
   // covering the whole in-person visit regardless of which roster doctor
   // is selected. Paid to hospitalMomoNumber above via the exact same
@@ -415,6 +416,7 @@ model LabProvider {
   id                 String   @id @default(uuid()) @db.Uuid
   providerRef        String   @unique
   name               String
+  email              String? // for order confirmation emails — added on request, never existed before
   ownerDoctorId      String?  @db.Uuid
   hospitalId         String?
   serviceType        LabServiceType @default(on_site)

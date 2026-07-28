@@ -61,6 +61,14 @@ async function send(to: string, subject: string, text: string): Promise<void> {
   await withTimeout(t.sendMail({ from: env.emailFrom, to, subject, text }), 10000);
 }
 
+// Generic wrapper around the same private send() above, for use from the
+// async Notification queue — appointment/order confirmations aren't as
+// time/security-sensitive as a password reset, so this doesn't need its
+// own transport, just its own entry point.
+export async function sendPlainEmail(to: string, subject: string, body: string): Promise<void> {
+  await send(to, subject, body);
+}
+
 export async function sendWelcomeCredentialsEmail(
   to: string,
   identifier: string,

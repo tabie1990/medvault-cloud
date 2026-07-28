@@ -1,5 +1,6 @@
 import { prisma } from '../db/prisma.js';
 import { generateAppointmentRef } from './id.service.js';
+import { queueNotification } from './notification.service.js';
 
 export interface CreateAppointmentInput {
   globalPatientId?: string;
@@ -42,6 +43,32 @@ export async function createAppointment(input: CreateAppointmentInput) {
       payload: (input.raw ?? {}) as any
     }
   });
+
+  // Confirmation email, best-effort — never let a notification failure
+  // block the actual booking. Queued through the same dispatcher as
+  // every other notification, not sent inline, so a slow/down mail
+  // server can never delay the booking response itself.
+  const when = input.requestedDate ? `${input.requestedDate}${input.requestedTime ? ` at ${input.requestedTime}` : ''}` : 'a time to be confirmed';
+  const emailBody = `A new ${input.appointmentType === 'teleconsult' ? 'teleconsultation' : 'in-person'} appointment has been booked.\n\nReference: ${appointment.appointmentRef}\nWhen: ${when}\n\nPlease check your MedVAULT dashboard for full details.`;
+  if (input.doctorId) {
+    await queueNotification({
+      channel: 'email',
+      recipientType: 'doctor',
+      recipientRef: input.doctorId,
+      templateType: 'appointment_confirmation',
+      payload: { subject: `New appointment: ${appointment.appointmentRef}`, body: emailBody }
+    }).catch(() => {});
+  }
+  if (input.hospitalId) {
+    await queueNotification({
+      channel: 'email',
+      recipientType: 'hospital',
+      recipientRef: input.hospitalId,
+      templateType: 'appointment_confirmation',
+      payload: { subject: `New appointment: ${appointment.appointmentRef}`, body: emailBody }
+    }).catch(() => {});
+  }
+
   return appointment;
 }
 
