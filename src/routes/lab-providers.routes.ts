@@ -146,6 +146,34 @@ labProvidersRouter.post(
   })
 );
 
+labProvidersRouter.patch(
+  '/:id/services/:serviceId',
+  requireAuth('doctor'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const provider = await prisma.labProvider.findUnique({ where: { id: req.params.id } });
+    if (!provider) return res.status(404).json({ success: false, error: 'lab_provider_not_found' });
+    if (provider.ownerDoctorId !== req.user!.sub) {
+      return res.status(403).json({ success: false, error: 'not_the_owner_of_this_lab' });
+    }
+    const existing = await prisma.labService.findUnique({ where: { id: req.params.serviceId } });
+    if (!existing || existing.labProviderId !== provider.id) {
+      return res.status(404).json({ success: false, error: 'lab_service_not_found' });
+    }
+    const { test_name, base_price, test_code, turnaround_hours, is_active } = req.body;
+    const service = await prisma.labService.update({
+      where: { id: req.params.serviceId },
+      data: {
+        ...(test_name !== undefined ? { testName: test_name } : {}),
+        ...(base_price !== undefined ? { basePrice: base_price } : {}),
+        ...(test_code !== undefined ? { testCode: test_code } : {}),
+        ...(turnaround_hours !== undefined ? { turnaroundHours: turnaround_hours } : {}),
+        ...(is_active !== undefined ? { isActive: is_active } : {})
+      }
+    });
+    res.json({ success: true, lab_service: service });
+  })
+);
+
 // Filters to verified-only by default now — a pre-launch requirement
 // flagged since Block 0, closed here. Pass ?include_unverified=true only
 // makes sense for the owning doctor's own view of their not-yet-approved
