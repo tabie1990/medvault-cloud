@@ -79,6 +79,18 @@ export async function createLabOrder(input: CreateLabOrderInput) {
       }
     }).catch(() => {});
   }
+  // Same internal follow-up copy as appointments — every lab order,
+  // regardless of whether the lab has its own email on file.
+  await queueNotification({
+    channel: 'email',
+    recipientType: 'internal',
+    recipientRef: 'internal',
+    templateType: 'appointment_confirmation',
+    payload: {
+      subject: `[Internal] New lab order: ${order.orderRef}`,
+      body: `A new lab order has been placed.\n\nReference: ${order.orderRef}\nLab: ${labProvider.name}\nServices: ${services.map((s: any) => s.testName).join(', ')}\n\nPlease check the MedVAULT admin dashboard for full details.`
+    }
+  }).catch(() => {});
 
   return prisma.labOrder.findUnique({
     where: { id: order.id },

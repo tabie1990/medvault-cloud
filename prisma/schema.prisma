@@ -330,6 +330,8 @@ model Doctor {
   mustChangePassword  Boolean @default(false)
   specialty           String?
   licenseNumber       String?
+  dob                 DateTime? // date of birth — genuinely never captured before this
+  address             String?
   verificationStatus  VerificationStatus @default(pending)
   providerType        ProviderType @default(independent)
   // KYC — manual document review, no automated verification exists for

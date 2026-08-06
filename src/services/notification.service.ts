@@ -10,7 +10,7 @@ export type NotificationChannel = 'whatsapp' | 'push' | 'sms' | 'email';
 
 interface CreateNotificationInput {
   channel: NotificationChannel;
-  recipientType: 'patient' | 'doctor' | 'lab_provider' | 'hospital';
+  recipientType: 'patient' | 'doctor' | 'lab_provider' | 'hospital' | 'internal';
   recipientRef: string; // globalPatientId, doctor id, lab provider id, or hospitalId
   templateType: string;
   payload: Record<string, unknown>;
@@ -64,6 +64,12 @@ async function resolveEmail(recipientType: string, recipientRef: string): Promis
   if (recipientType === 'hospital') {
     const hospital = await prisma.hospital.findUnique({ where: { hospitalId: recipientRef } });
     return hospital?.email ?? null;
+  }
+  if (recipientType === 'internal') {
+    // A fixed, configurable follow-up address — not tied to any provider
+    // record, unlike the other three above. Defaults to the address
+    // requested for early-stage manual follow-up on every booking.
+    return env.internalNotificationEmail;
   }
   return null;
 }

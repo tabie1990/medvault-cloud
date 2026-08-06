@@ -24,6 +24,10 @@ export const env = {
 
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
   openaiApiKey: process.env.OPENAI_API_KEY ?? '',
+  // Follow-up copy of every booking, for the early-stage manual
+  // follow-up workflow — configurable via env rather than hardcoded, in
+  // case it needs to change later.
+  internalNotificationEmail: process.env.INTERNAL_NOTIFICATION_EMAIL ?? 'medvault24@gmail.com',
   // 'anthropic' or 'openai' — lets the WhatsApp agent run on either
   // provider for real cost/quality comparison, without needing two
   // separate deployments. Defaults to anthropic (the proven, tested

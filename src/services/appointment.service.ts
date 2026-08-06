@@ -68,6 +68,17 @@ export async function createAppointment(input: CreateAppointmentInput) {
       payload: { subject: `New appointment: ${appointment.appointmentRef}`, body: emailBody }
     }).catch(() => {});
   }
+  // Requested for the early-stage manual follow-up workflow — a copy of
+  // every single booking, regardless of whether the doctor/hospital has
+  // their own email on file, so the MedVAULT team can personally confirm
+  // it actually goes through with the patient and provider.
+  await queueNotification({
+    channel: 'email',
+    recipientType: 'internal',
+    recipientRef: 'internal',
+    templateType: 'appointment_confirmation',
+    payload: { subject: `[Internal] New appointment: ${appointment.appointmentRef}`, body: emailBody }
+  }).catch(() => {});
 
   return appointment;
 }
