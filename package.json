@@ -4,7 +4,9 @@
   "private": true,
   "description": "MedVAULT Cloud — single-process API: hospital sync, appointments, doctors, lab providers/orders, telemedicine, patient/doctor auth, WhatsApp AI agent. No message broker, no PaaS lock-in — built to run on a single small VPS.",
   "type": "module",
-  "engines": { "node": ">=22.0.0" },
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
@@ -29,6 +31,7 @@
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
     "nodemailer": "^9.0.3",
+    "openai": "^7.4.0",
     "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
