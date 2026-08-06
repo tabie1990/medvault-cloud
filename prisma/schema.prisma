@@ -661,3 +661,36 @@ model ErrorLog {
 
   @@index([createdAt])
 }
+
+// Deliberately not tied to any existing user table — "doctors or
+// patients or anyone" can request a code, including someone with no
+// MedVAULT account at all. The referrer's identity is captured directly
+// here instead, since there's nothing else to link to for a non-user.
+model ReferralCode {
+  id                  String   @id @default(uuid()) @db.Uuid
+  code                String   @unique
+  referrerName        String
+  referrerPhone       String
+  referrerMomoNumber  String?
+  referrerMomoNetwork String?
+  createdAt           DateTime @default(now())
+  referrals           DoctorReferral[]
+}
+
+// One row per doctor who registered through a code — reward payout is
+// deliberately manual for now (queued as 'reward_owed', paid by hand via
+// MoMo), the same real limitation blocking Block 4's automated
+// split-payout: Campay's transfer/disbursement API isn't usable yet
+// without production credentials.
+model DoctorReferral {
+  id               String    @id @default(uuid()) @db.Uuid
+  referralCodeId   String    @db.Uuid
+  referredDoctorId String    @unique @db.Uuid
+  status           String    @default("pending") // pending | reward_owed | paid
+  rewardAmount     Decimal   @default(1000)
+  createdAt        DateTime  @default(now())
+  completedAt      DateTime?
+  paidAt           DateTime?
+  referralCode     ReferralCode @relation(fields: [referralCodeId], references: [id])
+}
+

@@ -38,3 +38,12 @@ export function generateTempPassword(): string {
   for (let i = 0; i < 12; i++) out += chars[Math.floor(Math.random() * chars.length)];
   return out;
 }
+
+// Short and shareable — someone reads this aloud or types it into a
+// registration form, unlike generateRef's long timestamped IDs.
+export function generateReferralCode(): string {
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  let out = '';
+  for (let i = 0; i < 8; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}

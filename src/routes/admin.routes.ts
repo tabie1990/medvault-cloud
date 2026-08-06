@@ -3,6 +3,7 @@ import { prisma } from '../db/prisma.js';
 import { requireAuth, type AuthedRequest } from '../middleware/auth.middleware.js';
 import { asyncHandler } from '../middleware/error.middleware.js';
 import { getDownloadUrl } from '../services/storage.service.js';
+import { queueNotification } from '../services/notification.service.js';
 
 export const adminRouter = Router();
 
@@ -98,6 +99,34 @@ adminRouter.post(
         kycRejectionReason: approve ? null : reason ?? 'Not specified'
       }
     });
+
+    // If this doctor was referred, approval is the "profile complete"
+    // trigger the reward was promised on — flip to reward_owed and
+    // notify the team to pay it out manually (see schema.prisma comment
+    // on DoctorReferral for why this isn't automated).
+    if (approve) {
+      const referral = await prisma.doctorReferral.findUnique({
+        where: { referredDoctorId: doctor.id },
+        include: { referralCode: true }
+      });
+      if (referral && referral.status === 'pending') {
+        await prisma.doctorReferral.update({
+          where: { id: referral.id },
+          data: { status: 'reward_owed', completedAt: new Date() }
+        });
+        await queueNotification({
+          channel: 'email',
+          recipientType: 'internal',
+          recipientRef: 'internal',
+          templateType: 'appointment_confirmation',
+          payload: {
+            subject: `[Referral] Reward owed — ${referral.referralCode.referrerName}`,
+            body: `${referral.referralCode.referrerName} (${referral.referralCode.referrerPhone}) referred Dr. ${doctor.fullName}, who has now been approved.\n\nReward owed: ${referral.rewardAmount} XAF\nPay to: ${referral.referralCode.referrerMomoNumber ?? 'no MoMo number on file — contact them directly'} (${referral.referralCode.referrerMomoNetwork ?? 'network unknown'})\n\nMark this paid in the admin dashboard once sent.`
+          }
+        }).catch(() => {});
+      }
+    }
+
     res.json({ success: true, verification_status: doctor.verificationStatus });
   })
 );
@@ -346,5 +375,40 @@ adminRouter.put(
       orderBy: { dayOfWeek: 'asc' }
     });
     res.json({ success: true, working_hours: workingHours });
+  })
+);
+
+adminRouter.get(
+  '/referrals',
+  requireAuth('admin'),
+  asyncHandler(async (req, res) => {
+    const status = req.query.status as string | undefined;
+    const referrals = await prisma.doctorReferral.findMany({
+      where: status ? { status } : {},
+      include: { referralCode: true },
+      orderBy: { createdAt: 'desc' }
+    });
+    // Referred doctor's name isn't a formal relation on this table (same
+    // reasoning as Appointment.globalPatientId elsewhere) — batched
+    // lookup rather than N+1.
+    const doctorIds = [...new Set(referrals.map((r: any) => r.referredDoctorId))];
+    const doctors = await prisma.doctor.findMany({ where: { id: { in: doctorIds } } });
+    const doctorsById = new Map<string, any>(doctors.map((d: any) => [d.id, d]));
+    res.json({
+      success: true,
+      referrals: referrals.map((r: any) => ({ ...r, referredDoctorName: doctorsById.get(r.referredDoctorId)?.fullName ?? null }))
+    });
+  })
+);
+
+adminRouter.post(
+  '/referrals/:id/mark-paid',
+  requireAuth('admin'),
+  asyncHandler(async (req, res) => {
+    const referral = await prisma.doctorReferral.update({
+      where: { id: req.params.id },
+      data: { status: 'paid', paidAt: new Date() }
+    });
+    res.json({ success: true, referral });
   })
 );

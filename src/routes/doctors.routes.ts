@@ -53,6 +53,18 @@ doctorsRouter.post(
         .catch((err) => console.error('welcome email failed to send:', err.message));
     }
 
+    // Referral is optional and silently ignored if the code doesn't
+    // exist — a wrong/typo'd code shouldn't block registration itself,
+    // only the reward tracking.
+    if (b.referral_code) {
+      const referralCode = await prisma.referralCode.findUnique({ where: { code: b.referral_code } });
+      if (referralCode) {
+        await prisma.doctorReferral.create({
+          data: { referralCodeId: referralCode.id, referredDoctorId: doctor.id, status: 'pending' }
+        });
+      }
+    }
+
     const { passwordHash: _omit, ...safeDoctor } = doctor;
     res.status(201).json({
       success: true,

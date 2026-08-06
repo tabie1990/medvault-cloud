@@ -15,7 +15,7 @@ import {
 } from './hospital-roster-availability.service.js';
 import { requestPayment, checkPaymentStatus } from './payment.service.js';
 import { requestLabPayment, checkLabPaymentStatus } from './lab-payment.service.js';
-import { generateGlobalPatientId } from './id.service.js';
+import { generateGlobalPatientId, generateReferralCode } from './id.service.js';
 import { findHospitalsNear } from './hospital-search.service.js';
 import { logError } from './error-log.service.js';
 
@@ -227,6 +227,21 @@ const tools: Anthropic.Tool[] = [
         amount: { type: 'number' }
       },
       required: ['order_ref', 'phone', 'amount']
+    }
+  },
+  {
+    name: 'generate_referral_code',
+    description:
+      "Generate a shareable referral code/link for someone (patient, doctor, or anyone at all — no MedVAULT account required) who wants to refer a doctor to join MedVAULT. Requires their name, phone number, and Mobile Money details for the reward payout once a referred doctor's profile is approved.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        referrer_name: { type: 'string' },
+        referrer_phone: { type: 'string', description: '237XXXXXXXXX' },
+        referrer_momo_number: { type: 'string' },
+        referrer_momo_network: { type: 'string', enum: ['MTN', 'Orange'] }
+      },
+      required: ['referrer_name', 'referrer_phone']
     }
   },
   {
@@ -530,6 +545,24 @@ async function executeTool(
       } catch (e: any) {
         return JSON.stringify({ error: e.message });
       }
+    }
+
+    case 'generate_referral_code': {
+      const code = generateReferralCode();
+      await prisma.referralCode.create({
+        data: {
+          code,
+          referrerName: input.referrer_name,
+          referrerPhone: input.referrer_phone,
+          referrerMomoNumber: input.referrer_momo_number,
+          referrerMomoNetwork: input.referrer_momo_network
+        }
+      });
+      return JSON.stringify({
+        code,
+        share_link: `${env.webAppUrl}/doctor-register?ref=${code}`,
+        reward_amount: 1000
+      });
     }
 
     case 'escalate_to_human': {
