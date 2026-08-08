@@ -247,6 +247,40 @@ async function sendUpcomingAppointmentReminders() {
   }
 }
 
+/**
+ * Flags any VaccinationRecord whose scheduledDate has passed and is
+ * still sitting at 'due' as 'overdue', and sends one reminder to every
+ * guardian linked to that child — guarded by reminderSentAt, same
+ * pattern as the teleconsult reminder poller, so it never repeats.
+ */
+async function checkOverdueVaccinations() {
+  const now = new Date();
+  const overdue = await prisma.vaccinationRecord.findMany({
+    where: { status: 'due', scheduledDate: { lt: now }, reminderSentAt: null },
+    include: { scheduleItem: true },
+    take: 50
+  });
+
+  for (const record of overdue) {
+    await prisma.vaccinationRecord.update({ where: { id: record.id }, data: { status: 'overdue' } });
+
+    const guardianLinks = await prisma.guardianLink.findMany({ where: { childPatientId: record.childPatientId } });
+    const child = await prisma.globalPatient.findUnique({ where: { globalPatientId: record.childPatientId } });
+
+    for (const link of guardianLinks) {
+      await queueNotification({
+        channel: 'whatsapp',
+        recipientType: 'patient',
+        recipientRef: link.guardianPatientId,
+        templateType: 'vaccination_reminder',
+        payload: { params: [child?.fullName ?? 'your child', record.scheduleItem.vaccineName] }
+      }).catch(() => {});
+    }
+
+    await prisma.vaccinationRecord.update({ where: { id: record.id }, data: { reminderSentAt: now } });
+  }
+}
+
 export function startPollers() {
   setInterval(() => fanOutNewAppointments().catch((e) => logError('poller:appointments', e)), INTERVAL_MS);
   setInterval(() => fanOutLabOrderEvents().catch((e) => logError('poller:lab-orders', e)), INTERVAL_MS);
@@ -255,5 +289,6 @@ export function startPollers() {
   setInterval(() => dispatchPendingNotifications().catch((e) => logError('poller:notifications', e)), INTERVAL_MS);
   setInterval(() => checkPendingTeleconsultPayments().catch((e) => logError('poller:payment-check', e)), INTERVAL_MS);
   setInterval(() => sendUpcomingAppointmentReminders().catch((e) => logError('poller:reminders', e)), INTERVAL_MS);
+  setInterval(() => checkOverdueVaccinations().catch((e) => logError('poller:vaccinations', e)), INTERVAL_MS);
   console.log('In-process pollers started (appointments, lab orders, sync events, notifications).');
 }
