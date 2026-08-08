@@ -21,4 +21,5 @@ jobs:
             npx prisma generate
             npx prisma migrate deploy
             npm run build
-            pm2 restart medvault-api
+            pm2 restart medvault-api || pm2 start dist/server.js --name medvault-api
+pm2 save
