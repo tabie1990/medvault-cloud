@@ -694,3 +694,112 @@ model DoctorReferral {
   referralCode     ReferralCode @relation(fields: [referralCodeId], references: [id])
 }
 
+// ── Pediatric / immunization / postnatal (Task 3) ──────────────────
+//
+// Deliberately reuses GlobalPatient for children rather than building a
+// parallel patient identity system — a child is still fundamentally a
+// patient (they can be booked for appointments, have lab orders, etc.),
+// just with a guardian relationship layered on top. This means every
+// existing booking/appointment/lab feature already works for a child's
+// own record without any changes.
+
+// One guardian can have multiple children; one child can have multiple
+// guardians (divorced parents, an orphan cared for by an uncle, etc.) —
+// matches the document's stated requirement exactly, hence many-to-many
+// rather than a single foreign key on either side.
+model GuardianLink {
+  id                String   @id @default(uuid()) @db.Uuid
+  guardianPatientId String // GlobalPatient.globalPatientId
+  childPatientId    String // GlobalPatient.globalPatientId
+  relationship      String // Mother, Father, Uncle, Guardian, etc.
+  createdAt         DateTime @default(now())
+
+  @@unique([guardianPatientId, childPatientId])
+  @@index([childPatientId])
+}
+
+// Raw measurements only for this phase — no WHO percentile chart
+// plotting or automated SAM/MAM malnutrition flagging yet (that needs
+// WHO LMS reference tables integrated, deliberately deferred). Still
+// genuinely useful on its own: a real, dated record of every
+// weight/height/head-circumference/MUAC reading, ready for chart
+// plotting to be added on top later without a schema change.
+model GrowthMeasurement {
+  id                  String    @id @default(uuid()) @db.Uuid
+  childPatientId      String
+  measuredAt          DateTime  @default(now())
+  weightKg            Decimal?
+  heightCm            Decimal?
+  headCircumferenceCm Decimal?
+  muacCm              Decimal? // mid-upper arm circumference — malnutrition screening
+  recordedByDoctorId  String?   @db.Uuid
+  notes               String?
+  createdAt           DateTime  @default(now())
+
+  @@index([childPatientId])
+}
+
+// The Cameroon EPI schedule itself, as data rather than hardcoded logic
+// — so a schedule change never needs a code deploy, just an admin
+// updating this table.
+model VaccinationScheduleItem {
+  id             String @id @default(uuid()) @db.Uuid
+  vaccineName    String // "BCG", "Penta 1", "Measles/Yellow Fever/MenA"
+  dueAtDays      Int    // age in days this dose is due — birth=0, 6 weeks=42, etc.
+  sortOrder      Int    @default(0)
+  isActive       Boolean @default(true)
+  records        VaccinationRecord[]
+}
+
+// One row per dose per child. Created (status='due') automatically for
+// every child based on VaccinationScheduleItem, then updated to
+// 'administered' when actually given, or flagged 'overdue' by the same
+// poller pattern already used elsewhere in this project.
+model VaccinationRecord {
+  id                  String    @id @default(uuid()) @db.Uuid
+  childPatientId      String
+  scheduleItemId      String    @db.Uuid
+  scheduledDate       DateTime // dob + dueAtDays, computed at creation
+  status              String    @default("due") // due | administered | overdue | skipped
+  administeredAt      DateTime?
+  batchNumber         String?
+  administeredBy      String? // nurse/doctor name, free text — not every administerer has a MedVAULT account
+  reminderSentAt      DateTime? // guards against repeat WhatsApp reminders, same pattern as Appointment
+  createdAt           DateTime  @default(now())
+  scheduleItem        VaccinationScheduleItem @relation(fields: [scheduleItemId], references: [id])
+
+  @@index([childPatientId])
+  @@index([status, scheduledDate])
+}
+
+model NeonatalRecord {
+  id                  String    @id @default(uuid()) @db.Uuid
+  childPatientId      String    @unique
+  motherPatientId     String? // links the delivery episode to the mother's own GlobalPatient record
+  birthWeightKg       Decimal?
+  birthLengthCm       Decimal?
+  headCircumferenceCm Decimal?
+  apgar1Min           Int?
+  apgar5Min           Int?
+  modeOfDelivery      String?
+  gestationalAgeWeeks Int?
+  complications       String?
+  vitaminKGiven       Boolean   @default(false)
+  hepBBirthDoseGiven  Boolean   @default(false)
+  newbornScreeningResult String?
+  createdAt           DateTime  @default(now())
+}
+
+model DevelopmentalMilestone {
+  id                    String    @id @default(uuid()) @db.Uuid
+  childPatientId        String
+  milestoneName         String // "Smiling", "Head control", "Sitting", "Walking", "First words", "Vision screening", "Hearing screening"
+  achievedAt            DateTime?
+  ageAtAssessmentMonths Int?
+  concernFlagged        Boolean   @default(false)
+  notes                 String?
+  createdAt             DateTime  @default(now())
+
+  @@index([childPatientId])
+}
+

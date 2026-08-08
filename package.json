@@ -15,7 +15,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
-    "seed:admin": "tsx src/scripts/seed-admin.ts"
+    "seed:admin": "tsx src/scripts/seed-admin.ts",
+    "seed:epi-schedule": "tsx src/scripts/seed-epi-schedule.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
