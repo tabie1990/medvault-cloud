@@ -16,6 +16,7 @@ import {
 import { requestPayment, checkPaymentStatus } from './payment.service.js';
 import { requestLabPayment, checkLabPaymentStatus } from './lab-payment.service.js';
 import { generateGlobalPatientId, generateReferralCode } from './id.service.js';
+import { createPendingVaccinationRecords } from './pediatric.service.js';
 import { findHospitalsNear } from './hospital-search.service.js';
 import { logError } from './error-log.service.js';
 
@@ -227,6 +228,36 @@ const tools: Anthropic.Tool[] = [
         amount: { type: 'number' }
       },
       required: ['order_ref', 'phone', 'amount']
+    }
+  },
+  {
+    name: 'register_child',
+    description:
+      "Register a new child for the identified guardian — call register_or_identify_patient first, this always registers the child under whoever is currently identified as the patient in this conversation. Automatically creates the child's full vaccination schedule based on their real date of birth — no separate step needed for that.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        full_name: { type: 'string' },
+        dob: { type: 'string', description: 'YYYY-MM-DD' },
+        sex: { type: 'string', enum: ['male', 'female'] },
+        relationship: { type: 'string', description: "The guardian's relationship to the child, e.g. Mother, Father, Uncle, Guardian" }
+      },
+      required: ['full_name', 'dob', 'relationship']
+    }
+  },
+  {
+    name: 'list_my_children',
+    description: 'List every child linked to the currently identified guardian.',
+    input_schema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'get_child_vaccination_status',
+    description:
+      "Get a specific child's full vaccination schedule and status (due, overdue, or administered for each dose). Use the child_patient_id from list_my_children — never guess or invent one.",
+    input_schema: {
+      type: 'object',
+      properties: { child_patient_id: { type: 'string' } },
+      required: ['child_patient_id']
     }
   },
   {
@@ -545,6 +576,58 @@ async function executeTool(
       } catch (e: any) {
         return JSON.stringify({ error: e.message });
       }
+    }
+
+    case 'register_child': {
+      if (!contact.globalPatientId) {
+        return JSON.stringify({ error: 'guardian_not_identified', message: 'Call register_or_identify_patient first.' });
+      }
+      const dob = new Date(input.dob);
+      const childGlobalPatientId = await generateGlobalPatientId();
+      const child = await prisma.globalPatient.create({
+        data: { globalPatientId: childGlobalPatientId, fullName: input.full_name, dob, sex: input.sex ?? null }
+      });
+      await prisma.guardianLink.create({
+        data: { guardianPatientId: contact.globalPatientId, childPatientId: child.globalPatientId, relationship: input.relationship }
+      });
+      await createPendingVaccinationRecords(child.globalPatientId, dob);
+      return JSON.stringify({ child_patient_id: child.globalPatientId, full_name: child.fullName });
+    }
+
+    case 'list_my_children': {
+      if (!contact.globalPatientId) {
+        return JSON.stringify({ error: 'guardian_not_identified', message: 'Call register_or_identify_patient first.' });
+      }
+      const links = await prisma.guardianLink.findMany({ where: { guardianPatientId: contact.globalPatientId } });
+      const childIds = links.map((l: any) => l.childPatientId);
+      const children = await prisma.globalPatient.findMany({ where: { globalPatientId: { in: childIds } } });
+      const relationshipByChild = new Map<string, string>(links.map((l: any) => [l.childPatientId, l.relationship]));
+      return JSON.stringify({
+        children: children.map((c: any) => ({
+          child_patient_id: c.globalPatientId,
+          full_name: c.fullName,
+          dob: c.dob,
+          relationship: relationshipByChild.get(c.globalPatientId)
+        }))
+      });
+    }
+
+    case 'get_child_vaccination_status': {
+      const records = await prisma.vaccinationRecord.findMany({
+        where: { childPatientId: input.child_patient_id },
+        include: { scheduleItem: true },
+        orderBy: { scheduledDate: 'asc' }
+      });
+      if (records.length === 0) return JSON.stringify({ found: false });
+      return JSON.stringify({
+        found: true,
+        vaccinations: records.map((r: any) => ({
+          vaccine_name: r.scheduleItem.vaccineName,
+          scheduled_date: r.scheduledDate,
+          status: r.status,
+          administered_at: r.administeredAt
+        }))
+      });
     }
 
     case 'generate_referral_code': {
