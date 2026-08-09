@@ -1,4 +1,5 @@
 import { env } from '../config/env.js';
+import { uploadBuffer } from './storage.service.js';
 
 const GRAPH_API_VERSION = 'v20.0';
 
@@ -111,7 +112,7 @@ export interface InboundWhatsAppMessage {
  * numbers for different purposes (here: one for OTP delivery only, one
  * for the AI agent) can tell them apart rather than processing everything
  * the same way regardless of source. */
-export function parseInboundMessages(body: any): InboundWhatsAppMessage[] {
+export async function parseInboundMessages(body: any): Promise<InboundWhatsAppMessage[]> {
   const messages: InboundWhatsAppMessage[] = [];
   const entries = body?.entry ?? [];
   for (const entry of entries) {
@@ -133,9 +134,86 @@ export function parseInboundMessages(body: any): InboundWhatsAppMessage[] {
             text: `[LOCATION_SHARED lat=${latitude} lng=${longitude}]`,
             receivingPhoneNumberId
           });
+        } else if (msg.type === 'image' && msg.image) {
+          // Same synthetic-text pattern as location sharing above — the
+          // actual image bytes get downloaded and stored separately
+          // (see downloadAndStoreInboundImage), and the agent sees a
+          // plain text marker with the resulting storage key, so the
+          // existing text-only conversation loop needs no structural
+          // change to handle this.
+          const key = await downloadAndStoreInboundImage(msg.image.id, msg.from);
+          const caption = msg.image.caption ? ` caption="${msg.image.caption}"` : '';
+          messages.push({
+            from: msg.from,
+            text: key ? `[IMAGE_RECEIVED key=${key}${caption}]` : '[IMAGE_RECEIVED_BUT_DOWNLOAD_FAILED]',
+            receivingPhoneNumberId
+          });
         }
       }
     }
   }
   return messages;
 }
+
+/**
+ * Downloads an inbound image from WhatsApp's Media API and re-uploads it
+ * to our own storage, returning the storage key (never the raw WhatsApp
+ * media URL — that URL is short-lived and requires our access token to
+ * fetch, so it's useless to store directly).
+ *
+ * Two-step process per Meta's API: first resolve the media_id to a real
+ * (temporary, auth-required) URL, then fetch the actual bytes from it.
+ */
+async function downloadAndStoreInboundImage(mediaId: string, fromPhone: string): Promise<string | null> {
+  if (!apiConfigured()) {
+    console.log(`[whatsapp:dev-mode] would download media ${mediaId}`);
+    return null;
+  }
+  try {
+    const metaRes = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${mediaId}`, {
+      headers: { Authorization: `Bearer ${env.whatsappAccessToken}` }
+    });
+    const meta = (await metaRes.json()) as { url?: string; mime_type?: string };
+    if (!meta.url) return null;
+
+    const fileRes = await fetch(meta.url, { headers: { Authorization: `Bearer ${env.whatsappAccessToken}` } });
+    const buffer = Buffer.from(await fileRes.arrayBuffer());
+    const contentType = meta.mime_type ?? 'image/jpeg';
+    const extension = contentType.split('/')[1] ?? 'jpg';
+
+    const { key } = await uploadBuffer('vaccination-proofs', `${fromPhone}-${Date.now()}.${extension}`, contentType, buffer);
+    return key;
+  } catch (err) {
+    console.error('Failed to download/store inbound WhatsApp image:', err);
+    return null;
+  }
+}
+
+/**
+ * Sends a document (used for the vaccination report PDF). WhatsApp fetches
+ * the file itself from the given link rather than requiring us to upload
+ * to their media endpoint first — so a short-lived presigned B2 URL works
+ * fine here, same pattern as getDownloadUrl elsewhere, just handed to
+ * Meta's servers instead of a browser.
+ */
+export async function sendDocumentMessage(to: string, documentUrl: string, filename: string, caption?: string): Promise<void> {
+  if (!apiConfigured()) {
+    console.log(`[whatsapp:dev-mode] would send document to ${to}: ${filename}`);
+    return;
+  }
+  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${env.whatsappPhoneNumberId}/messages`;
+  await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.whatsappAccessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'document',
+      document: { link: documentUrl, filename, ...(caption ? { caption } : {}) }
+    })
+  });
+}
+

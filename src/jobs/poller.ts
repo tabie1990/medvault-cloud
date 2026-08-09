@@ -261,11 +261,28 @@ async function checkOverdueVaccinations() {
     take: 50
   });
 
+  // Grouped by child first — a child with several newly-overdue doses at
+  // once gets ONE combined reminder, not a separate message per dose.
+  // The earlier version fired one WhatsApp message per record here,
+  // which meant a child overdue on 11 doses sent 11 back-to-back
+  // messages to the guardian — a real, confirmed bad experience, not a
+  // hypothetical one.
+  const byChild = new Map<string, typeof overdue>();
   for (const record of overdue) {
-    await prisma.vaccinationRecord.update({ where: { id: record.id }, data: { status: 'overdue' } });
+    const list = byChild.get(record.childPatientId) ?? [];
+    list.push(record);
+    byChild.set(record.childPatientId, list);
+  }
 
-    const guardianLinks = await prisma.guardianLink.findMany({ where: { childPatientId: record.childPatientId } });
-    const child = await prisma.globalPatient.findUnique({ where: { globalPatientId: record.childPatientId } });
+  for (const [childPatientId, records] of byChild) {
+    await prisma.vaccinationRecord.updateMany({
+      where: { id: { in: records.map((r: any) => r.id) } },
+      data: { status: 'overdue' }
+    });
+
+    const guardianLinks = await prisma.guardianLink.findMany({ where: { childPatientId } });
+    const child = await prisma.globalPatient.findUnique({ where: { globalPatientId: childPatientId } });
+    const vaccineNames = records.map((r: any) => r.scheduleItem.vaccineName).join(', ');
 
     for (const link of guardianLinks) {
       await queueNotification({
@@ -273,11 +290,14 @@ async function checkOverdueVaccinations() {
         recipientType: 'patient',
         recipientRef: link.guardianPatientId,
         templateType: 'vaccination_reminder',
-        payload: { params: [child?.fullName ?? 'your child', record.scheduleItem.vaccineName] }
+        payload: { params: [child?.fullName ?? 'your child', vaccineNames] }
       }).catch(() => {});
     }
 
-    await prisma.vaccinationRecord.update({ where: { id: record.id }, data: { reminderSentAt: now } });
+    await prisma.vaccinationRecord.updateMany({
+      where: { id: { in: records.map((r: any) => r.id) } },
+      data: { reminderSentAt: now }
+    });
   }
 }
 

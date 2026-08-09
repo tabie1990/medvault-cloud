@@ -53,6 +53,22 @@ export async function getDownloadUrl(key: string): Promise<string> {
   return getSignedUrl(client(), command, { expiresIn: 600 });
 }
 
+/**
+ * Direct server-side upload from a buffer — distinct from getUploadUrl,
+ * which hands a presigned PUT URL to a browser client. This is for cases
+ * where the server itself already has the file's bytes in hand (e.g.
+ * downloaded from WhatsApp's Media API) and just needs to store them,
+ * with no client round-trip involved.
+ */
+export async function uploadBuffer(keyPrefix: string, fileName: string, contentType: string, buffer: Buffer): Promise<{ key: string }> {
+  if (!isConfigured()) {
+    throw new Error('Object storage is not configured (B2_* environment variables missing)');
+  }
+  const key = `${keyPrefix}/${crypto.randomUUID()}-${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+  await client().send(new PutObjectCommand({ Bucket: env.b2Bucket, Key: key, ContentType: contentType, Body: buffer }));
+  return { key };
+}
+
 export function storageConfigured(): boolean {
   return isConfigured();
 }

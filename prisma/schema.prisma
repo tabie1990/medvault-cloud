@@ -760,11 +760,19 @@ model VaccinationRecord {
   childPatientId      String
   scheduleItemId      String    @db.Uuid
   scheduledDate       DateTime // dob + dueAtDays, computed at creation
-  status              String    @default("due") // due | administered | overdue | skipped
+  status              String    @default("due") // due | administered | overdue | skipped | parent_reported | proof_submitted
   administeredAt      DateTime?
   batchNumber         String?
   administeredBy      String? // nurse/doctor name, free text — not every administerer has a MedVAULT account
   reminderSentAt      DateTime? // guards against repeat WhatsApp reminders, same pattern as Appointment
+  // Guardian self-report — deliberately kept separate from administeredAt/
+  // administeredBy above, which mean "a doctor confirmed this." A parent's
+  // own claim is real, useful information, but must never be
+  // indistinguishable from clinically verified data in the record.
+  reportedByGuardianAt DateTime?
+  reportedDate         DateTime? // the date the guardian says it was given, if known
+  proofImageKey        String? // B2 storage key for an uploaded vaccination card photo
+  proofSubmittedAt     DateTime?
   createdAt           DateTime  @default(now())
   scheduleItem        VaccinationScheduleItem @relation(fields: [scheduleItemId], references: [id])
 

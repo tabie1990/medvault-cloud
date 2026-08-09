@@ -19,7 +19,7 @@ whatsappRouter.post(
   '/webhook',
   asyncHandler(async (req, res) => {
     res.sendStatus(200);
-    const messages = parseInboundMessages(req.body);
+    const messages = await parseInboundMessages(req.body);
     for (const msg of messages) {
       // This one Callback URL is shared across every number on the Meta
       // app — including a separate number used only for OTP delivery to

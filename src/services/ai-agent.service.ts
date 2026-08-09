@@ -5,7 +5,8 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { prisma } from '../db/prisma.js';
 import { env } from '../config/env.js';
-import { sendTextMessage } from './whatsapp.service.js';
+import { sendTextMessage, sendDocumentMessage } from './whatsapp.service.js';
+import { generateVaccinationReportPdf } from './pediatric-report.service.js';
 import { createAppointment } from './appointment.service.js';
 import { createLabOrder } from './lab-order.service.js';
 import { getSlotsForDate, getSlotsForNextDays } from './availability.service.js';
@@ -254,6 +255,44 @@ const tools: Anthropic.Tool[] = [
     name: 'get_child_vaccination_status',
     description:
       "Get a specific child's full vaccination schedule and status (due, overdue, or administered for each dose). Use the child_patient_id from list_my_children — never guess or invent one.",
+    input_schema: {
+      type: 'object',
+      properties: { child_patient_id: { type: 'string' } },
+      required: ['child_patient_id']
+    }
+  },
+  {
+    name: 'report_vaccination_taken',
+    description:
+      "A guardian self-reports that one or more of their child's vaccines have already been given (e.g. at a different facility). This is recorded as guardian-reported, NOT as clinically verified — a doctor still needs to confirm it during a real visit. Match vaccine_names against what get_child_vaccination_status actually returned; never guess a name.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        child_patient_id: { type: 'string' },
+        vaccine_names: { type: 'array', items: { type: 'string' }, description: 'Exact vaccine names as returned by get_child_vaccination_status' },
+        reported_date: { type: 'string', description: 'YYYY-MM-DD if the guardian knows it, otherwise omit' }
+      },
+      required: ['child_patient_id', 'vaccine_names']
+    }
+  },
+  {
+    name: 'submit_vaccination_proof',
+    description:
+      "Attach an uploaded vaccination card photo as proof for a dose. Only call this immediately after the patient's message contains a [IMAGE_RECEIVED key=...] marker — use the exact key from that marker, never invent one. Ask which child and which dose the photo is for first if it isn't already clear from context.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        child_patient_id: { type: 'string' },
+        vaccine_name: { type: 'string', description: 'Exact vaccine name as returned by get_child_vaccination_status' },
+        image_key: { type: 'string', description: 'The key from the [IMAGE_RECEIVED key=...] marker' }
+      },
+      required: ['child_patient_id', 'vaccine_name', 'image_key']
+    }
+  },
+  {
+    name: 'generate_vaccination_report',
+    description:
+      "Generate and send a PDF vaccination report for a child, delivered directly in this WhatsApp conversation as a document. Use the real child_patient_id from list_my_children.",
     input_schema: {
       type: 'object',
       properties: { child_patient_id: { type: 'string' } },
@@ -628,6 +667,58 @@ async function executeTool(
           administered_at: r.administeredAt
         }))
       });
+    }
+
+    case 'report_vaccination_taken': {
+      const records = await prisma.vaccinationRecord.findMany({
+        where: { childPatientId: input.child_patient_id },
+        include: { scheduleItem: true }
+      });
+      const updated: string[] = [];
+      const notFound: string[] = [];
+      for (const name of input.vaccine_names as string[]) {
+        const record = records.find((r: any) => r.scheduleItem.vaccineName.toLowerCase() === name.toLowerCase());
+        if (!record) {
+          notFound.push(name);
+          continue;
+        }
+        await prisma.vaccinationRecord.update({
+          where: { id: record.id },
+          data: {
+            status: 'parent_reported',
+            reportedByGuardianAt: new Date(),
+            reportedDate: input.reported_date ? new Date(input.reported_date) : null
+          }
+        });
+        updated.push(name);
+      }
+      return JSON.stringify({ updated, not_found: notFound });
+    }
+
+    case 'submit_vaccination_proof': {
+      const records = await prisma.vaccinationRecord.findMany({
+        where: { childPatientId: input.child_patient_id },
+        include: { scheduleItem: true }
+      });
+      const record = records.find((r: any) => r.scheduleItem.vaccineName.toLowerCase() === (input.vaccine_name as string).toLowerCase());
+      if (!record) return JSON.stringify({ success: false, error: 'vaccine_not_found_for_this_child' });
+
+      await prisma.vaccinationRecord.update({
+        where: { id: record.id },
+        data: {
+          proofImageKey: input.image_key,
+          proofSubmittedAt: new Date(),
+          status: record.status === 'administered' ? 'administered' : 'proof_submitted'
+        }
+      });
+      return JSON.stringify({ success: true });
+    }
+
+    case 'generate_vaccination_report': {
+      const report = await generateVaccinationReportPdf(input.child_patient_id);
+      if (!report) return JSON.stringify({ success: false, error: 'child_not_found' });
+      await sendDocumentMessage(contact.waPhoneNumber, report.url, report.filename, 'MedVAULT Vaccination Report');
+      return JSON.stringify({ success: true, sent: true });
     }
 
     case 'generate_referral_code': {
