@@ -7,74 +7,77 @@
  * Usage:
  *   npx tsx src/scripts/seed-epi-schedule.ts
  *
- * If the schedule itself ever changes, this file is the place to update
- * it — no code deploy needed elsewhere, since VaccinationScheduleItem is
- * plain data that VaccinationRecord creation reads at runtime.
+ * ── Sourcing note (this version is the real one) ───────────────────
+ * Rebuilt from the official Ministry of Public Health / PEV Cameroun
+ * poster ("Calendrier de vaccination de l'enfant, l'adolescent(e), la
+ * femme enceinte et l'adulte"), dated June 2025, WHO/Gavi/UNICEF
+ * co-branded. This supersedes two earlier attempts built from general
+ * knowledge and web research — several real errors are corrected here:
+ *   - MenA IS part of the schedule (an earlier version removed it as
+ *     "unconfirmed" — wrong; it's real, at 15 months)
+ *   - Measles is a 2-dose "Measles-Rubella" series (9mo, 15mo), not a
+ *     single dose, and not "MMR" (an earlier version had both wrong)
+ *   - IPV is real, 2 doses (14 weeks, 9 months) — an earlier version
+ *     excluded it as unconfirmed
+ *   - Rotavirus is 3 doses (6/10/14 weeks), not 2
+ *   - The malaria vaccine is 4 doses at 6/7/9/24 months specifically —
+ *     an earlier version guessed WHO's generic pilot-country schedule,
+ *     which was wrong for Cameroon's actual intervals
+ *   - Hepatitis B has its own birth dose, separate from the Penta doses
+ *   - Vitamin A is 4 doses (6/12/18/24mo) per this poster specifically,
+ *     not an open-ended recurring series
  *
- * ── Sourcing note (important) ──────────────────────────────────────
- * Rebuilt from two independently cross-checked sources: Centre Pasteur
- * du Cameroun's official 0–11 month schedule (pasteur-yaounde.org) and
- * a peer-reviewed Yaoundé immunization study. An earlier version of
- * this list included MenA and MMR (not confirmed by either source —
- * removed), and was missing Rotavirus and Vitamin A's recurring nature
- * entirely (both added below).
+ * Deliberately NOT included, by explicit decision: TPIn (malaria
+ * chemoprevention — regional, only 8 of 10 regions per the poster's own
+ * footnote, and not a vaccine), MILDA (mosquito net distribution, not a
+ * medical intervention), Mebendazole (dewormer). Vaccines only for now.
  *
- * STILL UNCONFIRMED FOR THE EXACT AGES BELOW, included anyway because
- * the underlying evidence is strong enough not to omit it entirely:
- *   - Malaria vaccine (RTS,S/AS01) — Cameroon was the first country to
- *     add this to routine EPI in Jan 2024 per WHO/Gavi reporting, but
- *     it doesn't appear in either source document used for the rest of
- *     this list. Included below using WHO's standard 4-dose interval
- *     (the same pattern used in the original pilot countries and
- *     referenced for Cameroon's own rollout) rather than a
- *     Cameroon-specific confirmed day-count — worth confirming the
- *     exact ages against the current PEV Cameroun schedule directly.
- *
- * STILL UNCONFIRMED AND LEFT OUT, genuinely no strong evidence either way:
- *   - IPV — not listed in either source used here
- *   - HPV (adolescent, 9-14yo) — outside the 0-24 month window this
- *     schedule currently covers.
- * Get all of this confirmed by an actual clinician or the current PEV
- * Cameroun schedule directly before treating this list as final.
+ * Also not included: HPV (9 years — outside this system's current
+ * 0-24 month tracking window).
  */
 import { prisma } from '../db/prisma.js';
 
 const EPI_SCHEDULE: { vaccineName: string; dueAtDays: number; sortOrder: number }[] = [
-  { vaccineName: 'BCG', dueAtDays: 0, sortOrder: 1 },
-  { vaccineName: 'OPV 0', dueAtDays: 0, sortOrder: 2 },
+  // 1st contact — birth
+  { vaccineName: 'OPV 0', dueAtDays: 0, sortOrder: 1 },
+  { vaccineName: 'BCG', dueAtDays: 0, sortOrder: 2 },
+  { vaccineName: 'Hepatitis B (birth dose)', dueAtDays: 0, sortOrder: 3 },
   // 2nd contact — 6 weeks
-  { vaccineName: 'Penta 1', dueAtDays: 42, sortOrder: 3 },
-  { vaccineName: 'PCV 1', dueAtDays: 42, sortOrder: 4 },
-  { vaccineName: 'OPV 1', dueAtDays: 42, sortOrder: 5 },
-  { vaccineName: 'Rotavirus 1', dueAtDays: 42, sortOrder: 6 },
+  { vaccineName: 'OPV 1', dueAtDays: 42, sortOrder: 4 },
+  { vaccineName: 'Rotavirus 1', dueAtDays: 42, sortOrder: 5 },
+  { vaccineName: 'Penta 1', dueAtDays: 42, sortOrder: 6 },
+  { vaccineName: 'PCV 1', dueAtDays: 42, sortOrder: 7 },
   // 3rd contact — 10 weeks
-  { vaccineName: 'Penta 2', dueAtDays: 70, sortOrder: 7 },
-  { vaccineName: 'PCV 2', dueAtDays: 70, sortOrder: 8 },
-  { vaccineName: 'OPV 2', dueAtDays: 70, sortOrder: 9 },
-  { vaccineName: 'Rotavirus 2', dueAtDays: 70, sortOrder: 10 },
+  { vaccineName: 'OPV 2', dueAtDays: 70, sortOrder: 8 },
+  { vaccineName: 'Rotavirus 2', dueAtDays: 70, sortOrder: 9 },
+  { vaccineName: 'Penta 2', dueAtDays: 70, sortOrder: 10 },
+  { vaccineName: 'PCV 2', dueAtDays: 70, sortOrder: 11 },
   // 4th contact — 14 weeks
-  { vaccineName: 'Penta 3', dueAtDays: 98, sortOrder: 11 },
-  { vaccineName: 'PCV 3', dueAtDays: 98, sortOrder: 12 },
-  { vaccineName: 'OPV 3', dueAtDays: 98, sortOrder: 13 },
-  // Malaria vaccine (RTS,S/AS01) — WHO standard 4-dose schedule,
-  // monthly starting ~5 months, booster ~18 months. Exact Cameroon-
-  // specific day-counts not confirmed — see note above.
-  { vaccineName: 'Malaria (RTS,S) 1', dueAtDays: 150, sortOrder: 14 },
-  { vaccineName: 'Malaria (RTS,S) 2', dueAtDays: 180, sortOrder: 15 },
-  { vaccineName: 'Malaria (RTS,S) 3', dueAtDays: 210, sortOrder: 16 },
-  // 5th contact — 9 months
-  { vaccineName: 'Measles', dueAtDays: 273, sortOrder: 17 },
-  { vaccineName: 'Yellow Fever', dueAtDays: 273, sortOrder: 18 },
-  { vaccineName: 'Malaria (RTS,S) 4 (booster)', dueAtDays: 545, sortOrder: 19 },
-  // Vitamin A — recurring every 6 months from 6 months, not a single
-  // dose. Seeded through 3 years; extend further here if needed rather
-  // than assuming it stops.
-  { vaccineName: 'Vitamin A', dueAtDays: 180, sortOrder: 20 },
-  { vaccineName: 'Vitamin A', dueAtDays: 365, sortOrder: 21 },
-  { vaccineName: 'Vitamin A', dueAtDays: 545, sortOrder: 22 },
-  { vaccineName: 'Vitamin A', dueAtDays: 730, sortOrder: 23 },
-  { vaccineName: 'Vitamin A', dueAtDays: 910, sortOrder: 24 },
-  { vaccineName: 'Vitamin A', dueAtDays: 1095, sortOrder: 25 }
+  { vaccineName: 'OPV 3', dueAtDays: 98, sortOrder: 12 },
+  { vaccineName: 'Rotavirus 3', dueAtDays: 98, sortOrder: 13 },
+  { vaccineName: 'Penta 3', dueAtDays: 98, sortOrder: 14 },
+  { vaccineName: 'PCV 3', dueAtDays: 98, sortOrder: 15 },
+  { vaccineName: 'IPV 1', dueAtDays: 98, sortOrder: 16 },
+  // 5th contact — 6 months
+  { vaccineName: 'Vitamin A', dueAtDays: 180, sortOrder: 17 },
+  { vaccineName: 'Malaria vaccine 1', dueAtDays: 180, sortOrder: 18 },
+  // 6th contact — 7 months
+  { vaccineName: 'Malaria vaccine 2', dueAtDays: 210, sortOrder: 19 },
+  // 7th contact — 9 months
+  { vaccineName: 'Measles-Rubella 1', dueAtDays: 273, sortOrder: 20 },
+  { vaccineName: 'Yellow Fever', dueAtDays: 273, sortOrder: 21 },
+  { vaccineName: 'IPV 2', dueAtDays: 273, sortOrder: 22 },
+  { vaccineName: 'Malaria vaccine 3', dueAtDays: 273, sortOrder: 23 },
+  // 8th contact — 12 months
+  { vaccineName: 'Vitamin A', dueAtDays: 365, sortOrder: 24 },
+  // 9th contact — 15 months
+  { vaccineName: 'Measles-Rubella 2', dueAtDays: 456, sortOrder: 25 },
+  { vaccineName: 'MenA/ACYW135', dueAtDays: 456, sortOrder: 26 },
+  // 10th contact — 18 months
+  { vaccineName: 'Vitamin A', dueAtDays: 545, sortOrder: 27 },
+  // 11th contact — 24 months
+  { vaccineName: 'Malaria vaccine 4', dueAtDays: 730, sortOrder: 28 },
+  { vaccineName: 'Vitamin A', dueAtDays: 730, sortOrder: 29 }
 ];
 
 async function main() {
