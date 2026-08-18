@@ -90,6 +90,72 @@ export async function sendTemplateMessage(
 }
 
 /**
+ * Sends a pre-approved template with 1-3 QUICK-REPLY buttons — distinct
+ * from sendTemplateMessage's 'url' button support above (a different
+ * sub_type in Meta's API). This exists specifically for the doctor
+ * instant-consult dispatch: a doctor may never have messaged BEN before,
+ * meaning they have no open 24-hour session, and Meta silently refuses
+ * to deliver a free-form message (including a free-form interactive
+ * button message) outside that window — found via a real case where one
+ * doctor never received a dispatch at all with no error anywhere, while
+ * another (who'd been actively testing via WhatsApp all day) received it
+ * fine. Templates are exempt from the session-window restriction, which
+ * is exactly the point of them.
+ *
+ * buttonPayloads become each button's reply payload, returned later in
+ * the webhook as msg.button.payload — normalized into the same
+ * buttonReplyId field as free-form interactive replies (see
+ * parseInboundMessages), so no downstream routing code needs to know
+ * which kind of button produced it.
+ */
+export async function sendTemplateWithQuickReplyButtons(
+  to: string,
+  templateName: string,
+  languageCode: string,
+  bodyParams: string[],
+  buttonPayloads: string[]
+): Promise<void> {
+  if (buttonPayloads.length < 1 || buttonPayloads.length > 3) {
+    throw new Error('sendTemplateWithQuickReplyButtons requires 1-3 buttons');
+  }
+  if (!apiConfigured()) {
+    console.log(`[whatsapp:dev-mode] would send template ${templateName} with quick-reply buttons to ${to}:`, bodyParams, buttonPayloads);
+    return;
+  }
+  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${env.whatsappPhoneNumberId}/messages`;
+  const components = [
+    ...(bodyParams.length ? [{ type: 'body', parameters: bodyParams.map((text) => ({ type: 'text', text })) }] : []),
+    ...buttonPayloads.map((payload, index) => ({
+      type: 'button',
+      sub_type: 'quick_reply',
+      index: String(index),
+      parameters: [{ type: 'payload', payload }]
+    }))
+  ];
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.whatsappAccessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: languageCode },
+        components
+      }
+    })
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`whatsapp_template_quick_reply_send_failed: ${res.status} ${text}`);
+  }
+}
+
+/**
  * Sends a WhatsApp "reply buttons" interactive message — the mechanism
  * behind the ACCEPT/DECLINE doctor dispatch. Meta caps this at exactly
  * 1–3 buttons and a 20-character title per button, enforced here rather
@@ -234,17 +300,36 @@ export async function parseInboundMessages(body: any): Promise<InboundWhatsAppMe
             receivingPhoneNumberId
           });
         } else if (msg.type === 'interactive' && msg.interactive?.type === 'button_reply') {
-          // A tap on a reply-button message (currently: only the doctor
-          // ACCEPT/DECLINE dispatch sends these). Kept as its own message
-          // type rather than folded into the text pipeline like location/
-          // image above — a button tap needs to be routed to the doctor
-          // dispatch handler, never to the patient-facing BEN agent loop,
-          // and collapsing that distinction here would make that routing
-          // decision easy to get wrong later.
+          // A tap on a free-form reply-button message. Kept as its own
+          // message type rather than folded into the text pipeline like
+          // location/image above — a button tap needs to be routed to
+          // the doctor dispatch handler, never to the patient-facing BEN
+          // agent loop, and collapsing that distinction here would make
+          // that routing decision easy to get wrong later.
           messages.push({
             from: msg.from,
             text: msg.interactive.button_reply.title,
             buttonReplyId: msg.interactive.button_reply.id,
+            receivingPhoneNumberId
+          });
+        } else if (msg.type === 'button' && msg.button) {
+          // A tap on a QUICK-REPLY button inside a template message —
+          // this is a genuinely different webhook shape than the
+          // free-form 'interactive'/'button_reply' case above, not a
+          // duplicate of it. Found the hard way: the doctor ACCEPT/
+          // DECLINE dispatch had to move to a template (see
+          // sendTemplateWithQuickReplyButtons) because a doctor who's
+          // never messaged BEN before has no open 24-hour session, and a
+          // free-form interactive message silently never arrives outside
+          // that window. Template buttons reply with msg.button.payload,
+          // not msg.interactive.button_reply.id — normalized into the
+          // same buttonReplyId field here so nothing downstream
+          // (whatsapp.routes.ts, doctor-whatsapp.service.ts) needs to
+          // know or care which kind of button produced it.
+          messages.push({
+            from: msg.from,
+            text: msg.button.text ?? '',
+            buttonReplyId: msg.button.payload,
             receivingPhoneNumberId
           });
         }

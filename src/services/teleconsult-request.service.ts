@@ -1,7 +1,7 @@
 import { prisma } from '../db/prisma.js';
 import { generateRef } from './id.service.js';
 import { createAppointment } from './appointment.service.js';
-import { sendInteractiveButtonsMessage, sendTextMessage } from './whatsapp.service.js';
+import { sendTemplateWithQuickReplyButtons, sendTextMessage } from './whatsapp.service.js';
 import { logError } from './error-log.service.js';
 
 // How long a dispatched request stays open before it's considered
@@ -70,18 +70,18 @@ export async function createInstantRequest(input: CreateInstantRequestInput): Pr
     }
   });
 
-  const body =
-    `🔔 New MedVAULT Teleconsult Request\n\n` +
-    `Specialty: ${input.specialty ?? 'General Consultation'}\n` +
-    (input.notes ? `Notes: ${input.notes}\n` : '') +
-    `Request expires in ${REQUEST_WINDOW_SECONDS} seconds.\n\n` +
-    `First to accept gets the patient.`;
+  // Two body variables to match the approved template exactly:
+  // {{1}} = specialty, {{2}} = the notes line (or empty — a template
+  // variable can't just be omitted, so this passes a blank string rather
+  // than skipping the parameter when there are no notes).
+  const specialtyParam = input.specialty ?? 'General Consultation';
+  const notesParam = input.notes ? `Notes: ${input.notes}` : 'No additional notes provided.';
 
   await Promise.all(
     eligibleDoctors.map((d: any) =>
-      sendInteractiveButtonsMessage(d.phone!, body, [
-        { id: `accept:${request.id}`, title: '✅ Accept' },
-        { id: `decline:${request.id}`, title: '❌ Decline' }
+      sendTemplateWithQuickReplyButtons(d.phone!, 'instant_teleconsult_request', 'en', [specialtyParam, notesParam], [
+        `accept:${request.id}`,
+        `decline:${request.id}`
       ]).catch((err) => logError('instant_consult_dispatch_send_failed', new Error(JSON.stringify({ doctorId: d.id, requestId: request.id, err: String(err) }))))
     )
   );
