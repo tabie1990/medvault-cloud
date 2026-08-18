@@ -55,7 +55,7 @@ export async function createInstantRequest(input: CreateInstantRequestInput): Pr
   // accepts (see claimInstantRequest). This shown-up-front figure is
   // provisional, purely so BEN can tell the patient roughly what to
   // expect before anyone has actually accepted.
-  const indicativeFee = eligibleDoctors.find((d) => d.teleconsultFee)?.teleconsultFee ?? null;
+  const indicativeFee = eligibleDoctors.find((d: any) => d.teleconsultFee)?.teleconsultFee ?? null;
 
   const request = await prisma.teleconsultRequest.create({
     data: {
@@ -66,7 +66,7 @@ export async function createInstantRequest(input: CreateInstantRequestInput): Pr
       notes: input.notes,
       consultationFee: indicativeFee ?? undefined,
       expiresAt,
-      dispatchedToDoctorIds: eligibleDoctors.map((d) => d.id)
+      dispatchedToDoctorIds: eligibleDoctors.map((d: any) => d.id)
     }
   });
 
@@ -78,7 +78,7 @@ export async function createInstantRequest(input: CreateInstantRequestInput): Pr
     `First to accept gets the patient.`;
 
   await Promise.all(
-    eligibleDoctors.map((d) =>
+    eligibleDoctors.map((d: any) =>
       sendInteractiveButtonsMessage(d.phone!, body, [
         { id: `accept:${request.id}`, title: '✅ Accept' },
         { id: `decline:${request.id}`, title: '❌ Decline' }
@@ -173,8 +173,8 @@ export async function notifyLosingDoctors(requestId: string, winningDoctorId: st
   const losingDoctors = await prisma.doctor.findMany({ where: { id: { in: losingIds } } });
   await Promise.all(
     losingDoctors
-      .filter((d) => d.phone)
-      .map((d) => sendTextMessage(d.phone!, `That teleconsult request has already been accepted by another doctor. Thanks for your quick response.`).catch(() => {}))
+      .filter((d: any) => d.phone)
+      .map((d: any) => sendTextMessage(d.phone!, `That teleconsult request has already been accepted by another doctor. Thanks for your quick response.`).catch(() => {}))
   );
 }
 
