@@ -40,10 +40,33 @@ export async function handleDoctorWhatsAppInteraction(doctorPhone: string, butto
       );
       await notifyLosingDoctors(requestId, doctor.id);
       if (result.patientWaPhoneNumber) {
-        await sendTextMessage(
-          result.patientWaPhoneNumber,
-          `A doctor has accepted your teleconsult request!${result.fee ? ` A payment prompt for ${result.fee.toLocaleString()} XAF is on its way to your phone — please approve it to confirm your consultation.` : ' Please check with our team to confirm payment details.'}`
-        );
+        if (result.paymentRequested) {
+          await sendTextMessage(
+            result.patientWaPhoneNumber,
+            `A doctor has accepted your teleconsult request!${result.fee ? ` A payment prompt for ${result.fee.toLocaleString()} XAF is on its way to your phone — please approve it to confirm your consultation.` : ''}`
+          );
+        } else {
+          // The automatic payment request itself failed (Campay error,
+          // network issue, etc — see the instant_consult_auto_payment_
+          // request_failed entry in ErrorLog for the real reason). Found
+          // via a real case where the patient was told a prompt was "on
+          // its way" that never actually arrived, then had to argue with
+          // BEN — who had no memory of any of this — before it finally
+          // got escalated. Telling the truth immediately and escalating
+          // right here, rather than waiting for the patient to notice
+          // and re-explain everything to BEN, is a faster and more
+          // honest path to the same outcome.
+          await sendTextMessage(
+            result.patientWaPhoneNumber,
+            `A doctor has accepted your teleconsult request! We hit a hiccup sending the payment prompt automatically — our team has been notified and will reach out to you directly to complete payment.`
+          );
+          await logError(
+            'instant_consult_payment_needs_manual_followup',
+            new Error(
+              `Appointment ${result.appointmentRef} accepted by doctor but automatic payment request failed. Patient: ${result.patientWaPhoneNumber}, fee: ${result.fee}. Needs manual payment follow-up.`
+            )
+          );
+        }
       }
     } else if (result.outcome === 'already_taken') {
       await sendTextMessage(doctorPhone, '⚠️ Already taken — another doctor accepted first. Thanks for the quick response.');
@@ -53,7 +76,7 @@ export async function handleDoctorWhatsAppInteraction(doctorPhone: string, butto
       await sendTextMessage(doctorPhone, "That request couldn't be found — it may have already been resolved.");
     }
   } catch (err) {
-    await logError('doctor_whatsapp_claim_failed', { doctorPhone, requestId, err: String(err) });
+    await logError('doctor_whatsapp_claim_failed', new Error(JSON.stringify({ doctorPhone, requestId, err: String(err) })));
     await sendTextMessage(doctorPhone, 'Something went wrong processing your response — please open the MedVAULT dashboard to check.').catch(() => {});
   }
 }

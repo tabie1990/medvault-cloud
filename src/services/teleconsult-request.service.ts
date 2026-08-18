@@ -83,7 +83,7 @@ export async function createInstantRequest(input: CreateInstantRequestInput): Pr
       sendInteractiveButtonsMessage(d.phone!, body, [
         { id: `accept:${request.id}`, title: '✅ Accept' },
         { id: `decline:${request.id}`, title: '❌ Decline' }
-      ]).catch((err) => logError('instant_consult_dispatch_send_failed', { doctorId: d.id, requestId: request.id, err: String(err) }))
+      ]).catch((err) => logError('instant_consult_dispatch_send_failed', new Error(JSON.stringify({ doctorId: d.id, requestId: request.id, err: String(err) }))))
     )
   );
 
@@ -95,6 +95,7 @@ export interface ClaimResult {
   appointmentRef?: string;
   patientWaPhoneNumber?: string;
   fee?: number | null;
+  paymentRequested?: boolean;
 }
 
 /**
@@ -150,13 +151,23 @@ export async function claimInstantRequest(requestId: string, doctorId: string): 
   // up with nobody accepting). The existing Campay collect + poller.ts
   // pipeline takes it from here exactly as it would for any other
   // teleconsult appointment — no new payment code needed.
+  let paymentRequested = false;
   if (fee) {
-    await requestPayment(appointment.id, request.waPhoneNumber, Number(fee)).catch((err) =>
-      logError('instant_consult_auto_payment_request_failed', { appointmentId: appointment.id, err: String(err) })
-    );
+    try {
+      await requestPayment(appointment.id, request.waPhoneNumber, Number(fee));
+      paymentRequested = true;
+    } catch (err) {
+      await logError('instant_consult_auto_payment_request_failed', new Error(JSON.stringify({ appointmentId: appointment.id, err: String(err) })));
+    }
   }
 
-  return { outcome: 'won', appointmentRef: appointment.appointmentRef, patientWaPhoneNumber: request.waPhoneNumber, fee: fee ? Number(fee) : null };
+  return {
+    outcome: 'won',
+    appointmentRef: appointment.appointmentRef,
+    patientWaPhoneNumber: request.waPhoneNumber,
+    fee: fee ? Number(fee) : null,
+    paymentRequested
+  };
 }
 
 /**
@@ -196,6 +207,6 @@ export async function expireStaleInstantRequests(): Promise<void> {
     await sendTextMessage(
       request.waPhoneNumber,
       `Sorry, no doctor was available to accept your teleconsult request in time. You can try again, or I can help you book a scheduled appointment instead.`
-    ).catch((err) => logError('instant_consult_expiry_notify_failed', { requestId: request.id, err: String(err) }));
+    ).catch((err) => logError('instant_consult_expiry_notify_failed', new Error(JSON.stringify({ requestId: request.id, err: String(err) }))));
   }
 }

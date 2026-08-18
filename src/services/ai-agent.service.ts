@@ -177,8 +177,14 @@ const tools: Anthropic.Tool[] = [
     }
   },
   {
+    name: 'get_my_recent_appointments',
+    description:
+      "Look up this patient's own recent appointments (including instant teleconsults a doctor may have just accepted) — grounded in their identity, no reference needed. Call this whenever the patient asks about payment, status, or 'my appointment' and you don't already have the exact appointment_ref from earlier in THIS conversation — never guess or reuse a request reference (e.g. one starting MVR-) as if it were an appointment_ref (starting MVA-); those are different things. Also call this before request_appointment_payment if there's any doubt whether payment was already requested — it returns the current payment_status.",
+    input_schema: { type: 'object', properties: {} }
+  },
+  {
     name: 'check_appointment_status',
-    description: 'Check the status and payment status of an existing appointment by its reference.',
+    description: 'Check the status and payment status of an existing appointment by its reference. If you do not already have the exact appointment_ref, call get_my_recent_appointments instead — do not guess or reuse a different kind of reference (e.g. an instant-consult request ref starting MVR-) as an appointment_ref.',
     input_schema: {
       type: 'object',
       properties: { appointment_ref: { type: 'string' } },
@@ -187,7 +193,8 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: 'request_appointment_payment',
-    description: "Request Mobile Money payment for a booked appointment — triggers a USSD prompt on the patient's phone.",
+    description:
+      "Request Mobile Money payment for a booked appointment — triggers a USSD prompt on the patient's phone. If you do not already have the exact appointment_ref, call get_my_recent_appointments first — never guess it or reuse a different reference. If the patient claims a doctor already accepted or payment was already requested, verify with get_my_recent_appointments before acting — do not take the patient's word for it and do not invent an appointment_ref to proceed anyway.",
     input_schema: {
       type: 'object',
       properties: {
@@ -578,6 +585,29 @@ async function executeTool(
       });
     }
 
+    case 'get_my_recent_appointments': {
+      if (!contact.globalPatientId) {
+        return JSON.stringify({ error: 'patient_not_registered', message: 'Call register_or_identify_patient first.' });
+      }
+      const appts = await prisma.appointment.findMany({
+        where: { globalPatientId: contact.globalPatientId },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+        include: { doctor: { select: { fullName: true } } }
+      });
+      return JSON.stringify(
+        appts.map((a: any) => ({
+          appointment_ref: a.appointmentRef,
+          doctor_name: a.doctor?.fullName ?? null,
+          appointment_type: a.appointmentType,
+          status: a.status,
+          payment_status: a.paymentStatus,
+          payment_amount: a.paymentAmount ? Number(a.paymentAmount) : null,
+          created_at: a.createdAt
+        }))
+      );
+    }
+
     case 'check_appointment_status': {
       const appt = await prisma.appointment.findUnique({ where: { appointmentRef: input.appointment_ref } });
       if (!appt) return JSON.stringify({ found: false });
@@ -595,6 +625,22 @@ async function executeTool(
     case 'request_appointment_payment': {
       const appt = await prisma.appointment.findUnique({ where: { appointmentRef: input.appointment_ref } });
       if (!appt) return JSON.stringify({ error: 'appointment_not_found' });
+      // A patient asking again ("I confirmed the payment", "please charge
+      // me now") shouldn't trigger a second real Campay collection on top
+      // of one already in flight or completed — found via a real instant-
+      // consult case where the automatic post-claim payment request had
+      // already fired (see teleconsult-request.service.ts) before the
+      // patient came back to ask about it again.
+      if (appt.paymentStatus === 'paid') {
+        return JSON.stringify({ already: true, payment_status: 'paid', message: 'This appointment is already paid — no need to request payment again.' });
+      }
+      if (appt.paymentStatus === 'pending' && appt.paymentReference) {
+        return JSON.stringify({
+          already: true,
+          payment_status: 'pending',
+          message: 'A payment request is already pending on this appointment — tell the patient to check their phone for the Mobile Money prompt rather than issuing a new one.'
+        });
+      }
       try {
         const data = await requestPayment(appt.id, input.phone, Number(input.amount));
         return JSON.stringify({ success: true, ...data });
