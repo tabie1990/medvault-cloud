@@ -91,3 +91,4 @@ temp/
 
 *.bak
 *.backup
+.ssh/
