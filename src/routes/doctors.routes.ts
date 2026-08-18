@@ -125,7 +125,16 @@ doctorsRouter.get(
     const doctor = await prisma.doctor.findUnique({ where: { id: req.user!.sub } });
     if (!doctor) return res.status(404).json({ success: false, error: 'doctor_not_found' });
     const { passwordHash: _omit, ...safeDoctor } = doctor;
-    res.json({ success: true, doctor: safeDoctor });
+    res.json({
+      success: true,
+      // Same computed photoUrl as /browse and /:id/public — this was
+      // missing here, which is why an uploaded photo would show
+      // immediately (the upload response returns photo_url directly)
+      // but then vanish on the next page load: this endpoint was
+      // returning the raw profilePhotoKey with no URL built from it,
+      // so the profile page had nothing to put in the <img> src.
+      doctor: { ...safeDoctor, photoUrl: doctor.profilePhotoKey ? `${env.apiBaseUrl}/api/v1/doctors/${doctor.id}/photo` : null }
+    });
   })
 );
 
