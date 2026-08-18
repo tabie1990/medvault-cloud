@@ -146,17 +146,35 @@ doctorsRouter.patch(
       full_name,
       dob,
       address,
-      accepting_instant_consults
+      accepting_instant_consults,
+      phone
     } = req.body;
     if (teleconsult_slot_minutes !== undefined && (teleconsult_slot_minutes < 5 || teleconsult_slot_minutes > 60)) {
       return res.status(400).json({ success: false, error: 'teleconsult_slot_minutes must be between 5 and 60' });
     }
+    // Phone was previously only ever set at registration — no editable
+    // path existed at all, which silently blocked any email-only doctor
+    // from ever turning on instant consults (found via a real doctor
+    // profile: "Add a phone number below" with no actual "below" to add
+    // it in). @unique on Doctor.phone, so this needs the same duplicate
+    // check registration itself does, just scoped to exclude this doctor.
+    if (phone !== undefined && phone !== null && phone !== '') {
+      const clash = await prisma.doctor.findFirst({ where: { phone, NOT: { id: req.user!.sub } } });
+      if (clash) {
+        return res.status(409).json({ success: false, error: 'a_doctor_with_this_phone_number_already_exists' });
+      }
+    }
     // A doctor can only turn on instant-consult paging once they actually
     // have a phone number on file — otherwise the dispatch has no way to
-    // reach them and they'd silently never receive anything.
+    // reach them and they'd silently never receive anything. Checks the
+    // phone being saved in this same request too, not just what's
+    // already stored, so a doctor adding their phone and flipping the
+    // toggle on in one save doesn't get rejected for a chicken-and-egg
+    // reason.
     if (accepting_instant_consults === true) {
       const current = await prisma.doctor.findUnique({ where: { id: req.user!.sub } });
-      if (!current?.phone) {
+      const effectivePhone = phone !== undefined ? phone : current?.phone;
+      if (!effectivePhone) {
         return res.status(400).json({ success: false, error: 'a_phone_number_is_required_before_enabling_instant_consults' });
       }
     }
@@ -172,6 +190,7 @@ doctorsRouter.patch(
         ...(full_name !== undefined ? { fullName: full_name } : {}),
         ...(dob !== undefined ? { dob: dob ? new Date(dob) : null } : {}),
         ...(address !== undefined ? { address } : {}),
+        ...(phone !== undefined ? { phone } : {}),
         ...(accepting_instant_consults !== undefined ? { acceptingInstantConsults: Boolean(accepting_instant_consults) } : {})
       }
     });
