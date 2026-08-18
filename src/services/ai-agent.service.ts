@@ -194,15 +194,14 @@ const tools: Anthropic.Tool[] = [
   {
     name: 'request_appointment_payment',
     description:
-      "Request Mobile Money payment for a booked appointment — triggers a USSD prompt on the patient's phone. If you do not already have the exact appointment_ref, call get_my_recent_appointments first — never guess it or reuse a different reference. If the patient claims a doctor already accepted or payment was already requested, verify with get_my_recent_appointments before acting — do not take the patient's word for it and do not invent an appointment_ref to proceed anyway.",
+      "Request Mobile Money payment for a booked appointment — triggers a USSD prompt on the patient's phone. The fee is looked up automatically from the provider's own records — never ask the patient what the fee is, and never pass an amount yourself. If you do not already have the exact appointment_ref, call get_my_recent_appointments first — never guess it or reuse a different reference. If the patient claims a doctor already accepted or payment was already requested, verify with get_my_recent_appointments before acting — do not take the patient's word for it and do not invent an appointment_ref to proceed anyway.",
     input_schema: {
       type: 'object',
       properties: {
         appointment_ref: { type: 'string' },
-        phone: { type: 'string', description: 'Cameroon MoMo number, format 237XXXXXXXXX' },
-        amount: { type: 'number' }
+        phone: { type: 'string', description: 'Cameroon MoMo number, format 237XXXXXXXXX' }
       },
-      required: ['appointment_ref', 'phone', 'amount']
+      required: ['appointment_ref', 'phone']
     }
   },
   {
@@ -240,15 +239,14 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: 'request_lab_payment',
-    description: "Request Mobile Money payment for a lab order — triggers a USSD prompt on the patient's phone.",
+    description: "Request Mobile Money payment for a lab order — triggers a USSD prompt on the patient's phone. The amount is looked up automatically from the order's own total — never ask the patient what it costs, and never pass an amount yourself.",
     input_schema: {
       type: 'object',
       properties: {
         order_ref: { type: 'string' },
-        phone: { type: 'string', description: 'Cameroon MoMo number, format 237XXXXXXXXX' },
-        amount: { type: 'number' }
+        phone: { type: 'string', description: 'Cameroon MoMo number, format 237XXXXXXXXX' }
       },
-      required: ['order_ref', 'phone', 'amount']
+      required: ['order_ref', 'phone']
     }
   },
   {
@@ -593,7 +591,7 @@ async function executeTool(
         where: { globalPatientId: contact.globalPatientId },
         orderBy: { createdAt: 'desc' },
         take: 5,
-        include: { doctor: { select: { fullName: true } } }
+        include: { doctor: { select: { fullName: true, teleconsultFee: true } } }
       });
       return JSON.stringify(
         appts.map((a: any) => ({
@@ -602,6 +600,15 @@ async function executeTool(
           appointment_type: a.appointmentType,
           status: a.status,
           payment_status: a.paymentStatus,
+          // The fee to actually quote the patient before payment has
+          // been requested — a.paymentAmount only gets set once
+          // request_appointment_payment has actually run, so it's null
+          // for anything not yet paid-for, which previously left the
+          // model with nothing to tell the patient except "let me check"
+          // or, worse, asking the patient what to charge. fee is the
+          // real, current number regardless of payment_status;
+          // payment_amount (when present) is what was actually charged.
+          fee: a.doctor?.teleconsultFee ? Number(a.doctor.teleconsultFee) : null,
           payment_amount: a.paymentAmount ? Number(a.paymentAmount) : null,
           created_at: a.createdAt
         }))
@@ -641,9 +648,31 @@ async function executeTool(
           message: 'A payment request is already pending on this appointment — tell the patient to check their phone for the Mobile Money prompt rather than issuing a new one.'
         });
       }
+      // The fee is looked up here, server-side, from the real source of
+      // truth — never accepted as a model-supplied parameter. Found via a
+      // real conversation where the model, lacking any reliable way to
+      // know the fee, first asked the PATIENT to go confirm the price
+      // with the doctor directly, then simply accepted whatever number
+      // the patient typed next ("Proceed with 15 frs") as if it were
+      // verified. A price is exactly the kind of fact that must come from
+      // a tool, never from what the model or the patient believes it to
+      // be — matching the same principle as the pricing-hallucination
+      // fix already in the system prompt, just enforced here in code
+      // where it can't be talked around.
+      let fee: number | null = null;
+      if (appt.appointmentType === 'teleconsult' && appt.doctorId) {
+        const doctor = await prisma.doctor.findUnique({ where: { id: appt.doctorId } });
+        fee = doctor?.teleconsultFee ? Number(doctor.teleconsultFee) : null;
+      } else if (appt.appointmentType === 'in_person' && appt.hospitalId) {
+        const hospital = await prisma.hospital.findUnique({ where: { hospitalId: appt.hospitalId } });
+        fee = hospital?.flatBookingFee ? Number(hospital.flatBookingFee) : null;
+      }
+      if (!fee) {
+        return JSON.stringify({ error: 'no_fee_on_file', message: 'This provider has no fee on file for this appointment type — escalate to a human rather than asking the patient what to charge.' });
+      }
       try {
-        const data = await requestPayment(appt.id, input.phone, Number(input.amount));
-        return JSON.stringify({ success: true, ...data });
+        const data = await requestPayment(appt.id, input.phone, fee);
+        return JSON.stringify({ success: true, amount_charged: fee, ...data });
       } catch (e: any) {
         return JSON.stringify({ error: e.message });
       }
@@ -694,9 +723,13 @@ async function executeTool(
     case 'request_lab_payment': {
       const order = await prisma.labOrder.findUnique({ where: { orderRef: input.order_ref } });
       if (!order) return JSON.stringify({ error: 'lab_order_not_found' });
+      const fee = order.totalCost ? Number(order.totalCost) : null;
+      if (!fee) {
+        return JSON.stringify({ error: 'no_total_on_file', message: 'This order has no total cost on file — escalate to a human rather than asking the patient what to charge.' });
+      }
       try {
-        const data = await requestLabPayment(order.id, input.phone, Number(input.amount));
-        return JSON.stringify({ success: true, ...data });
+        const data = await requestLabPayment(order.id, input.phone, fee);
+        return JSON.stringify({ success: true, amount_charged: fee, ...data });
       } catch (e: any) {
         return JSON.stringify({ error: e.message });
       }
