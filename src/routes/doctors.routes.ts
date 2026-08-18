@@ -230,7 +230,7 @@ doctorsRouter.get(
         specialty: doctor.specialty,
         consultationTypes: doctor.consultationTypes,
         teleconsultFee: doctor.teleconsultFee,
-        photoUrl: doctor.profilePhotoKey ? `${env.apiBaseUrl}/doctors/${doctor.id}/photo` : null
+        photoUrl: doctor.profilePhotoKey ? `${env.apiBaseUrl}/api/v1/doctors/${doctor.id}/photo` : null
       }
     });
   })
@@ -267,7 +267,7 @@ doctorsRouter.get(
         specialty: d.specialty,
         consultationTypes: d.consultationTypes,
         teleconsultFee: d.teleconsultFee,
-        photoUrl: d.profilePhotoKey ? `${env.apiBaseUrl}/doctors/${d.id}/photo` : null
+        photoUrl: d.profilePhotoKey ? `${env.apiBaseUrl}/api/v1/doctors/${d.id}/photo` : null
       }))
     });
   })
@@ -322,7 +322,7 @@ doctorsRouter.post(
       return res.status(400).json({ success: false, error: 'invalid_key' });
     }
     await prisma.doctor.update({ where: { id: req.user!.sub }, data: { profilePhotoKey: key } });
-    res.json({ success: true, photo_url: `${env.apiBaseUrl}/doctors/${req.user!.sub}/photo` });
+    res.json({ success: true, photo_url: `${env.apiBaseUrl}/api/v1/doctors/${req.user!.sub}/photo` });
   })
 );
 
