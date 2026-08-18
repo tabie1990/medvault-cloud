@@ -1,7 +1,6 @@
 import { prisma } from '../db/prisma.js';
 import { generateRef } from './id.service.js';
 import { createAppointment } from './appointment.service.js';
-import { requestPayment } from './payment.service.js';
 import { sendInteractiveButtonsMessage, sendTextMessage } from './whatsapp.service.js';
 import { logError } from './error-log.service.js';
 
@@ -95,7 +94,6 @@ export interface ClaimResult {
   appointmentRef?: string;
   patientWaPhoneNumber?: string;
   fee?: number | null;
-  paymentRequested?: boolean;
 }
 
 /**
@@ -145,29 +143,18 @@ export async function claimInstantRequest(requestId: string, doctorId: string): 
 
   await prisma.teleconsultRequest.update({ where: { id: requestId }, data: { appointmentId: appointment.id } });
 
-  // Kick off payment immediately — per product decision, the patient is
-  // only charged once a doctor has actually accepted, not up front at
-  // dispatch time (avoids collecting money for a request that might end
-  // up with nobody accepting). The existing Campay collect + poller.ts
-  // pipeline takes it from here exactly as it would for any other
-  // teleconsult appointment — no new payment code needed.
-  let paymentRequested = false;
-  if (fee) {
-    try {
-      await requestPayment(appointment.id, request.waPhoneNumber, Number(fee));
-      paymentRequested = true;
-    } catch (err) {
-      await logError('instant_consult_auto_payment_request_failed', new Error(JSON.stringify({ appointmentId: appointment.id, err: String(err) })));
-    }
-  }
-
-  return {
-    outcome: 'won',
-    appointmentRef: appointment.appointmentRef,
-    patientWaPhoneNumber: request.waPhoneNumber,
-    fee: fee ? Number(fee) : null,
-    paymentRequested
-  };
+  // Deliberately NOT auto-requesting payment here anymore. The earlier
+  // version passed the patient's own WhatsApp number straight to Campay
+  // as if it were their Mobile Money number — wrong in general (a
+  // WhatsApp number can be from any country; Campay needs a real
+  // 237-format MoMo number) and inconsistent with the scheduled-booking
+  // flow, which has always asked the patient for their MoMo number
+  // explicitly rather than assuming it's the same as their WhatsApp
+  // number. The patient-facing message telling them a doctor accepted
+  // (see doctor-whatsapp.service.ts) now asks for that number directly
+  // instead; BEN picks it up from there via get_my_recent_appointments +
+  // request_appointment_payment once the patient replies with it.
+  return { outcome: 'won', appointmentRef: appointment.appointmentRef, patientWaPhoneNumber: request.waPhoneNumber, fee: fee ? Number(fee) : null };
 }
 
 /**

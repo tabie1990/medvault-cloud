@@ -40,33 +40,21 @@ export async function handleDoctorWhatsAppInteraction(doctorPhone: string, butto
       );
       await notifyLosingDoctors(requestId, doctor.id);
       if (result.patientWaPhoneNumber) {
-        if (result.paymentRequested) {
-          await sendTextMessage(
-            result.patientWaPhoneNumber,
-            `A doctor has accepted your teleconsult request!${result.fee ? ` A payment prompt for ${result.fee.toLocaleString()} XAF is on its way to your phone — please approve it to confirm your consultation.` : ''}`
-          );
-        } else {
-          // The automatic payment request itself failed (Campay error,
-          // network issue, etc — see the instant_consult_auto_payment_
-          // request_failed entry in ErrorLog for the real reason). Found
-          // via a real case where the patient was told a prompt was "on
-          // its way" that never actually arrived, then had to argue with
-          // BEN — who had no memory of any of this — before it finally
-          // got escalated. Telling the truth immediately and escalating
-          // right here, rather than waiting for the patient to notice
-          // and re-explain everything to BEN, is a faster and more
-          // honest path to the same outcome.
-          await sendTextMessage(
-            result.patientWaPhoneNumber,
-            `A doctor has accepted your teleconsult request! We hit a hiccup sending the payment prompt automatically — our team has been notified and will reach out to you directly to complete payment.`
-          );
-          await logError(
-            'instant_consult_payment_needs_manual_followup',
-            new Error(
-              `Appointment ${result.appointmentRef} accepted by doctor but automatic payment request failed. Patient: ${result.patientWaPhoneNumber}, fee: ${result.fee}. Needs manual payment follow-up.`
-            )
-          );
-        }
+        // Ask for the Mobile Money number directly rather than assuming
+        // it's the same as the patient's WhatsApp number (that
+        // assumption was the actual bug — see teleconsult-request.
+        // service.ts). This message goes out through sendTextMessage
+        // directly (outside BEN's own conversation loop, since this
+        // fires from a doctor's button tap, not a patient message) but
+        // the patient's REPLY comes back in through the normal webhook
+        // and IS handled by BEN, which has been taught (system prompt +
+        // get_my_recent_appointments/request_appointment_payment tools)
+        // to recognize a bare phone number sent in this context as the
+        // MoMo number for their most recent unpaid appointment.
+        await sendTextMessage(
+          result.patientWaPhoneNumber,
+          `✅ A doctor has accepted your teleconsult request!\n\nTo complete your booking, please reply with your Mobile Money number (format 237XXXXXXXXX)${result.fee ? ` so I can request payment of ${result.fee.toLocaleString()} XAF` : ''}.`
+        );
       }
     } else if (result.outcome === 'already_taken') {
       await sendTextMessage(doctorPhone, '⚠️ Already taken — another doctor accepted first. Thanks for the quick response.');
