@@ -57,6 +57,11 @@ export const env = {
   // Public URL doctors/lab staff use to log in — included in welcome emails
   webAppUrl: process.env.WEB_APP_URL ?? 'https://cloud.med-vault.com',
 
+  // Public URL of this API itself — needed so responses can embed a real,
+  // fetchable link back to this server (e.g. doctor photoUrl below).
+  // Distinct from webAppUrl (the patient portal's own origin).
+  apiBaseUrl: process.env.API_BASE_URL ?? 'https://api.med-vault.com',
+
   // Campay — same aggregator the HMS's own teleconsult payment flow uses
   // (that implementation is already tested end-to-end with a real phone).
   // Platform-wide here, not per-hospital, since the cloud has exactly one

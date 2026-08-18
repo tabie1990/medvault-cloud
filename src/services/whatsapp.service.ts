@@ -89,6 +89,86 @@ export async function sendTemplateMessage(
   }
 }
 
+/**
+ * Sends a WhatsApp "reply buttons" interactive message — the mechanism
+ * behind the ACCEPT/DECLINE doctor dispatch. Meta caps this at exactly
+ * 1–3 buttons and a 20-character title per button, enforced here rather
+ * than left to fail at the API, since a silently-truncated button title
+ * ("✅ ACCE...") would be confusing to tap.
+ */
+export async function sendInteractiveButtonsMessage(
+  to: string,
+  bodyText: string,
+  buttons: { id: string; title: string }[]
+): Promise<void> {
+  if (buttons.length < 1 || buttons.length > 3) {
+    throw new Error('sendInteractiveButtonsMessage requires 1-3 buttons');
+  }
+  for (const b of buttons) {
+    if (b.title.length > 20) throw new Error(`button title too long (max 20 chars): ${b.title}`);
+  }
+  if (!apiConfigured()) {
+    console.log(`[whatsapp:dev-mode] would send interactive buttons to ${to}: ${bodyText}`, buttons);
+    return;
+  }
+  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${env.whatsappPhoneNumberId}/messages`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.whatsappAccessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'button',
+        body: { text: bodyText },
+        action: {
+          buttons: buttons.map((b) => ({ type: 'reply', reply: { id: b.id, title: b.title } }))
+        }
+      }
+    })
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`whatsapp_interactive_send_failed: ${res.status} ${text}`);
+  }
+}
+
+/**
+ * Sends an image message — used for a doctor's profile photo card. Needs
+ * a URL WhatsApp's servers can fetch directly (a short-lived presigned B2
+ * URL is fine here, same reasoning as sendDocumentMessage: Meta fetches
+ * it once, immediately, at send time — not a repeatedly-cached browser
+ * request the way the portal's <img> tag is).
+ */
+export async function sendImageMessage(to: string, imageUrl: string, caption?: string): Promise<void> {
+  if (!apiConfigured()) {
+    console.log(`[whatsapp:dev-mode] would send image to ${to}: ${imageUrl}`);
+    return;
+  }
+  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${env.whatsappPhoneNumberId}/messages`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.whatsappAccessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'image',
+      image: { link: imageUrl, ...(caption ? { caption } : {}) }
+    })
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`whatsapp_image_send_failed: ${res.status} ${text}`);
+  }
+}
+
 export function verifyWebhookChallenge(query: Record<string, unknown>): string | null {
   const mode = query['hub.mode'];
   const token = query['hub.verify_token'];
@@ -103,6 +183,11 @@ export interface InboundWhatsAppMessage {
   from: string;
   text: string;
   receivingPhoneNumberId: string | undefined;
+  // Present only when this message is a tap on a reply button (e.g. the
+  // doctor ACCEPT/DECLINE dispatch) — the id we assigned that button when
+  // sending it, e.g. "accept:<requestId>". Routed separately from the
+  // patient-facing BEN conversation loop; see whatsapp.routes.ts.
+  buttonReplyId?: string;
 }
 
 /** Parses Meta's webhook payload shape down to the parts we care about.
@@ -146,6 +231,20 @@ export async function parseInboundMessages(body: any): Promise<InboundWhatsAppMe
           messages.push({
             from: msg.from,
             text: key ? `[IMAGE_RECEIVED key=${key}${caption}]` : '[IMAGE_RECEIVED_BUT_DOWNLOAD_FAILED]',
+            receivingPhoneNumberId
+          });
+        } else if (msg.type === 'interactive' && msg.interactive?.type === 'button_reply') {
+          // A tap on a reply-button message (currently: only the doctor
+          // ACCEPT/DECLINE dispatch sends these). Kept as its own message
+          // type rather than folded into the text pipeline like location/
+          // image above — a button tap needs to be routed to the doctor
+          // dispatch handler, never to the patient-facing BEN agent loop,
+          // and collapsing that distinction here would make that routing
+          // decision easy to get wrong later.
+          messages.push({
+            from: msg.from,
+            text: msg.interactive.button_reply.title,
+            buttonReplyId: msg.interactive.button_reply.id,
             receivingPhoneNumberId
           });
         }

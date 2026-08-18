@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { verifyWebhookChallenge, parseInboundMessages } from '../services/whatsapp.service.js';
 import { handleIncomingWhatsAppMessage } from '../services/ai-agent.service.js';
+import { handleDoctorWhatsAppInteraction } from '../services/doctor-whatsapp.service.js';
 import { asyncHandler } from '../middleware/error.middleware.js';
 import { env } from '../config/env.js';
 
@@ -27,6 +28,19 @@ whatsappRouter.post(
       // arrived on the AI agent's own number; anything else is silently
       // ignored rather than accidentally treated as a conversation.
       if (msg.receivingPhoneNumberId && msg.receivingPhoneNumberId !== env.whatsappPhoneNumberId) {
+        continue;
+      }
+      // Button taps (currently: only the doctor ACCEPT/DECLINE dispatch)
+      // are routed to the doctor handler, never into the patient-facing
+      // BEN conversation loop — same phone number, same webhook, but a
+      // structurally different kind of message. This is also why it's
+      // checked first: a doctor is never expected to be mid-conversation
+      // with BEN at the same time as replying to a dispatch, so there's
+      // no ambiguity to resolve between the two paths.
+      if (msg.buttonReplyId) {
+        handleDoctorWhatsAppInteraction(msg.from, msg.buttonReplyId).catch((err) =>
+          console.error('doctor-whatsapp error:', err)
+        );
         continue;
       }
       handleIncomingWhatsAppMessage(msg.from, msg.text).catch((err) =>

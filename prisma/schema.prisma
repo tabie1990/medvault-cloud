@@ -225,6 +225,7 @@ model GlobalPatient {
   telemedicineSessions TelemedicineSession[]
   whatsAppContacts   WhatsAppContact[]
   prescriptions      Prescription[]
+  instantConsultRequests TeleconsultRequest[]
 }
 
 model PatientIdentityMap {
@@ -314,6 +315,7 @@ model Appointment {
   hospital          Hospital? @relation(fields: [hospitalId], references: [hospitalId])
   doctor            Doctor? @relation(fields: [doctorId], references: [id])
   hospitalDoctorRoster HospitalDoctorRoster? @relation(fields: [hospitalDoctorRosterId], references: [id])
+  instantConsultRequest TeleconsultRequest?
   telemedicineSession TelemedicineSession?
   paymentSplits     PaymentSplit[]
   prescriptions     Prescription[]
@@ -354,6 +356,19 @@ model Doctor {
   // hours, so this is modeled as its own thing, not synced from anywhere.
   teleconsultSlotMinutes Int @default(15) // configurable per doctor, not platform-fixed
   consultationTypes      Json? @default("[]") // e.g. ["General Consultation","Follow-up","Pediatric"]
+  // Object storage key for the doctor's profile photo — never a public
+  // URL (see storage.service.ts: B2 issues only short-lived presigned
+  // URLs). Served to patients via GET /doctors/:id/photo, which proxies
+  // the bytes through our own server so the response can carry a real
+  // Cache-Control header regardless of the presigned URL's own expiry.
+  profilePhotoKey     String?
+  // Explicit opt-in for the WhatsApp "first doctor to accept" instant
+  // teleconsult flow. Deliberately separate from verificationStatus and
+  // from having a phone number on file — a verified doctor with a phone
+  // number hasn't necessarily agreed to being paged in real time for
+  // every matching request, so this stays off (false) until the doctor
+  // turns it on themselves in their profile.
+  acceptingInstantConsults Boolean @default(false)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
   appointments        Appointment[]
@@ -362,6 +377,7 @@ model Doctor {
   telemedicineSessions TelemedicineSession[]
   prescriptions       Prescription[]
   availability        DoctorAvailability[]
+  instantConsultRequestsClaimed TeleconsultRequest[]
 }
 
 // A doctor's recurring weekly teleconsult availability — e.g. "Monday
@@ -811,3 +827,51 @@ model DevelopmentalMilestone {
   @@index([childPatientId])
 }
 
+enum TeleconsultRequestStatus {
+  pending
+  claimed
+  expired
+  cancelled
+}
+
+// The "first doctor to accept wins" real-time WhatsApp booking flow.
+// Deliberately its own model rather than an Appointment with a nullable
+// doctorId — an Appointment is a confirmed booking (that's what every
+// other part of the system, payment/reminders/sync, assumes it means),
+// while this is a broadcast-and-race request that may end with nobody
+// accepting at all. A winning claim creates a real Appointment
+// (appointment.service.ts, unchanged) and links back here via
+// appointmentId; every existing downstream step (payment request,
+// poller-driven room creation, reminders) then just works, since it's a
+// normal teleconsult appointment from that point on.
+model TeleconsultRequest {
+  id                String   @id @default(uuid()) @db.Uuid
+  requestRef        String   @unique
+  globalPatientId   String?
+  // Patient's own WhatsApp number — stored directly rather than only via
+  // globalPatient/whatsAppContact, so the claim handler can message the
+  // patient immediately without an extra join, the same reasoning as
+  // WhatsAppContact.waPhoneNumber itself.
+  waPhoneNumber     String
+  specialty         String?
+  notes             String?
+  consultationFee   Decimal?
+  status            TeleconsultRequestStatus @default(pending)
+  // Doctor ids the request was actually pushed to, so the losing doctors
+  // can be told "already taken" once one of them wins. A plain JSON
+  // array, not a join table — this list is written once at dispatch time
+  // and never queried by doctor, only iterated in full, so a join table
+  // would add a migration and a service for no real benefit here.
+  dispatchedToDoctorIds Json   @default("[]")
+  expiresAt         DateTime
+  claimedByDoctorId String?  @db.Uuid
+  claimedAt         DateTime?
+  appointmentId     String?  @unique @db.Uuid
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  globalPatient     GlobalPatient? @relation(fields: [globalPatientId], references: [globalPatientId])
+  claimedByDoctor   Doctor?        @relation(fields: [claimedByDoctorId], references: [id])
+  appointment       Appointment?   @relation(fields: [appointmentId], references: [id])
+
+  @@index([status, expiresAt])
+}

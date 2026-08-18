@@ -8,6 +8,7 @@ import { env } from '../config/env.js';
 import { sendTextMessage, sendDocumentMessage } from './whatsapp.service.js';
 import { generateVaccinationReportPdf } from './pediatric-report.service.js';
 import { createAppointment } from './appointment.service.js';
+import { createInstantRequest } from './teleconsult-request.service.js';
 import { createLabOrder } from './lab-order.service.js';
 import { getSlotsForDate, getSlotsForNextDays } from './availability.service.js';
 import {
@@ -161,6 +162,18 @@ const tools: Anthropic.Tool[] = [
         notes: { type: 'string' }
       },
       required: ['appointment_type']
+    }
+  },
+  {
+    name: 'request_instant_teleconsult',
+    description:
+      "Ask for an immediate, real-time teleconsult instead of a scheduled one — use this when the patient wants to talk to a doctor right now (e.g. 'is there a doctor available now', urgent but non-emergency symptoms), not when they want to pick a specific date/time. This pushes the request to every doctor currently marked as accepting instant consults, and whichever one accepts first is assigned — it does not book a specific doctor_id. Tell the patient it may take up to about 90 seconds to hear back, and that payment is only requested once a doctor has actually accepted.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        specialty: { type: 'string', description: 'e.g. "General Practice", "Pediatrics" — omit if the patient has no preference and any available doctor is fine' },
+        notes: { type: 'string', description: "A brief note on why they want to talk to a doctor, so the doctor has context when deciding whether to accept" }
+      }
     }
   },
   {
@@ -537,6 +550,32 @@ async function executeTool(
         channel: 'whatsapp'
       });
       return JSON.stringify({ appointment_ref: appt.appointmentRef, status: appt.status });
+    }
+
+    case 'request_instant_teleconsult': {
+      if (!contact.globalPatientId) {
+        return JSON.stringify({ error: 'patient_not_registered', message: 'Call register_or_identify_patient first.' });
+      }
+      const result = await createInstantRequest({
+        globalPatientId: contact.globalPatientId,
+        waPhoneNumber: contact.waPhoneNumber,
+        specialty: input.specialty,
+        notes: input.notes
+      });
+      if (!result.ok) {
+        return JSON.stringify({
+          success: false,
+          reason: result.reason,
+          message: 'No doctors are currently available for an instant consult. Offer a scheduled appointment instead via list_doctors / get_doctor_availability.'
+        });
+      }
+      return JSON.stringify({
+        success: true,
+        request_ref: result.requestRef,
+        dispatched_to_doctors: result.dispatchedCount,
+        expires_in_seconds: result.expiresInSeconds,
+        message: 'Request sent. The patient will be messaged directly and automatically the moment a doctor accepts — no need to keep polling this.'
+      });
     }
 
     case 'check_appointment_status': {

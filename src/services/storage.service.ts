@@ -72,3 +72,29 @@ export async function uploadBuffer(keyPrefix: string, fileName: string, contentT
 export function storageConfigured(): boolean {
   return isConfigured();
 }
+
+/**
+ * Fetches an object's bytes directly, for the one case where we want to
+ * proxy a private B2 object through our own server rather than handing
+ * out a presigned URL — doctor profile photos (GET /doctors/:id/photo).
+ * A presigned URL works fine for a one-off admin KYC review, but a photo
+ * that gets requested on every doctor-list render needs a stable URL the
+ * browser can actually cache; that only works if our own server's URL is
+ * what's cached, with the (constantly-rotating) B2 URL as an
+ * implementation detail behind it. Not used for KYC docs — those should
+ * never pass through anything but a short-lived, individually-authorized
+ * presigned URL.
+ */
+export async function getObjectBytes(key: string): Promise<{ body: Buffer; contentType: string } | null> {
+  if (!isConfigured()) return null;
+  try {
+    const res = await client().send(new GetObjectCommand({ Bucket: env.b2Bucket, Key: key }));
+    const chunks: Uint8Array[] = [];
+    // @ts-expect-error - Body is a Node Readable in this SDK's Node runtime
+    for await (const chunk of res.Body) chunks.push(chunk);
+    return { body: Buffer.concat(chunks), contentType: res.ContentType ?? 'application/octet-stream' };
+  } catch (err) {
+    console.error(`getObjectBytes failed for key ${key}:`, err);
+    return null;
+  }
+}

@@ -2,6 +2,7 @@ import { prisma } from '../db/prisma.js';
 import { dispatchPendingNotifications, queueNotification } from '../services/notification.service.js';
 import { checkPaymentStatus } from '../services/payment.service.js';
 import { createTelemedicineSession, createRoomForSession } from '../services/telemedicine.service.js';
+import { expireStaleInstantRequests } from '../services/teleconsult-request.service.js';
 import { logError } from '../services/error-log.service.js';
 import crypto from 'crypto';
 
@@ -310,5 +311,11 @@ export function startPollers() {
   setInterval(() => checkPendingTeleconsultPayments().catch((e) => logError('poller:payment-check', e)), INTERVAL_MS);
   setInterval(() => sendUpcomingAppointmentReminders().catch((e) => logError('poller:reminders', e)), INTERVAL_MS);
   setInterval(() => checkOverdueVaccinations().catch((e) => logError('poller:vaccinations', e)), INTERVAL_MS);
+  // 90-second dispatch window (see teleconsult-request.service.ts) needs
+  // to be swept at the same 10s granularity as everything else here, not
+  // a slower interval — a stale request sitting 'pending' for even an
+  // extra 30-60s past its real expiry is a doctor able to "win" a race
+  // the patient has already given up on.
+  setInterval(() => expireStaleInstantRequests().catch((e) => logError('poller:instant-consult-expiry', e)), INTERVAL_MS);
   console.log('In-process pollers started (appointments, lab orders, sync events, notifications).');
 }

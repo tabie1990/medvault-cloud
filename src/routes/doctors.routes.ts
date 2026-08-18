@@ -5,7 +5,7 @@ import { prisma } from '../db/prisma.js';
 import { generateRef, generateTempPassword } from '../services/id.service.js';
 import { signToken } from '../services/jwt.service.js';
 import { sendWelcomeCredentialsEmail } from '../services/email.service.js';
-import { getUploadUrl } from '../services/storage.service.js';
+import { getUploadUrl, getObjectBytes } from '../services/storage.service.js';
 import { setAvailability, getAvailability, getSlotsForNextDays } from '../services/availability.service.js';
 import { requireAuth, type AuthedRequest } from '../middleware/auth.middleware.js';
 import { asyncHandler } from '../middleware/error.middleware.js';
@@ -136,9 +136,29 @@ doctorsRouter.patch(
   '/me',
   requireAuth('doctor'),
   asyncHandler(async (req: AuthedRequest, res) => {
-    const { momo_number, momo_network, teleconsult_fee, teleconsult_slot_minutes, consultation_types, specialty, full_name, dob, address } = req.body;
+    const {
+      momo_number,
+      momo_network,
+      teleconsult_fee,
+      teleconsult_slot_minutes,
+      consultation_types,
+      specialty,
+      full_name,
+      dob,
+      address,
+      accepting_instant_consults
+    } = req.body;
     if (teleconsult_slot_minutes !== undefined && (teleconsult_slot_minutes < 5 || teleconsult_slot_minutes > 60)) {
       return res.status(400).json({ success: false, error: 'teleconsult_slot_minutes must be between 5 and 60' });
+    }
+    // A doctor can only turn on instant-consult paging once they actually
+    // have a phone number on file — otherwise the dispatch has no way to
+    // reach them and they'd silently never receive anything.
+    if (accepting_instant_consults === true) {
+      const current = await prisma.doctor.findUnique({ where: { id: req.user!.sub } });
+      if (!current?.phone) {
+        return res.status(400).json({ success: false, error: 'a_phone_number_is_required_before_enabling_instant_consults' });
+      }
     }
     const doctor = await prisma.doctor.update({
       where: { id: req.user!.sub },
@@ -151,7 +171,8 @@ doctorsRouter.patch(
         ...(specialty !== undefined ? { specialty } : {}),
         ...(full_name !== undefined ? { fullName: full_name } : {}),
         ...(dob !== undefined ? { dob: dob ? new Date(dob) : null } : {}),
-        ...(address !== undefined ? { address } : {})
+        ...(address !== undefined ? { address } : {}),
+        ...(accepting_instant_consults !== undefined ? { acceptingInstantConsults: Boolean(accepting_instant_consults) } : {})
       }
     });
     const { passwordHash: _omit, ...safeDoctor } = doctor;
@@ -208,7 +229,8 @@ doctorsRouter.get(
         fullName: doctor.fullName,
         specialty: doctor.specialty,
         consultationTypes: doctor.consultationTypes,
-        teleconsultFee: doctor.teleconsultFee
+        teleconsultFee: doctor.teleconsultFee,
+        photoUrl: doctor.profilePhotoKey ? `${env.apiBaseUrl}/doctors/${doctor.id}/photo` : null
       }
     });
   })
@@ -244,7 +266,8 @@ doctorsRouter.get(
         fullName: d.fullName,
         specialty: d.specialty,
         consultationTypes: d.consultationTypes,
-        teleconsultFee: d.teleconsultFee
+        teleconsultFee: d.teleconsultFee,
+        photoUrl: d.profilePhotoKey ? `${env.apiBaseUrl}/doctors/${d.id}/photo` : null
       }))
     });
   })
@@ -265,6 +288,58 @@ doctorsRouter.get(
       }
       throw e;
     }
+  })
+);
+
+// Presigned upload URL for the doctor's own profile photo — same
+// direct-to-storage pattern as the KYC upload below, just a different
+// (non-sensitive) key prefix.
+doctorsRouter.post(
+  '/me/photo/upload-url',
+  requireAuth('doctor'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const { file_name, content_type } = req.body;
+    if (!file_name || !content_type) {
+      return res.status(400).json({ success: false, error: 'file_name and content_type are required' });
+    }
+    if (!content_type.startsWith('image/')) {
+      return res.status(400).json({ success: false, error: 'content_type must be an image type' });
+    }
+    const result = await getUploadUrl(`doctors/${req.user!.sub}/profile-photo`, file_name, content_type);
+    res.json({ success: true, upload_url: result.uploadUrl, key: result.key });
+  })
+);
+
+doctorsRouter.post(
+  '/me/photo',
+  requireAuth('doctor'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const { key } = req.body;
+    if (!key) return res.status(400).json({ success: false, error: 'key is required' });
+    // Must actually be a key this doctor just uploaded to, not an
+    // arbitrary caller-supplied string pointing at someone else's file.
+    if (!key.startsWith(`doctors/${req.user!.sub}/profile-photo/`)) {
+      return res.status(400).json({ success: false, error: 'invalid_key' });
+    }
+    await prisma.doctor.update({ where: { id: req.user!.sub }, data: { profilePhotoKey: key } });
+    res.json({ success: true, photo_url: `${env.apiBaseUrl}/doctors/${req.user!.sub}/photo` });
+  })
+);
+
+// Public — proxies the photo bytes through our own server (see
+// storage.service.ts:getObjectBytes for why this isn't just a redirect
+// to a presigned URL: browsers can actually cache a stable URL like this
+// one, which they can't do for a URL that changes every time).
+doctorsRouter.get(
+  '/:id/photo',
+  asyncHandler(async (req, res) => {
+    const doctor = await prisma.doctor.findUnique({ where: { id: req.params.id }, select: { profilePhotoKey: true } });
+    if (!doctor?.profilePhotoKey) return res.status(404).json({ success: false, error: 'no_photo' });
+    const object = await getObjectBytes(doctor.profilePhotoKey);
+    if (!object) return res.status(404).json({ success: false, error: 'photo_unavailable' });
+    res.set('Content-Type', object.contentType);
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.send(object.body);
   })
 );
 
