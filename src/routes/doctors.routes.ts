@@ -133,7 +133,12 @@ doctorsRouter.get(
       // but then vanish on the next page load: this endpoint was
       // returning the raw profilePhotoKey with no URL built from it,
       // so the profile page had nothing to put in the <img> src.
-      doctor: { ...safeDoctor, photoUrl: doctor.profilePhotoKey ? `${env.apiBaseUrl}/api/v1/doctors/${doctor.id}/photo` : null }
+      doctor: {
+        ...safeDoctor,
+        photoUrl: doctor.profilePhotoKey ? `${env.apiBaseUrl}/api/v1/doctors/${doctor.id}/photo` : null,
+        hasSignature: Boolean(doctor.signatureKey),
+        hasStamp: Boolean(doctor.stampKey)
+      }
     });
   })
 );
@@ -370,6 +375,44 @@ doctorsRouter.get(
     res.send(object.body);
   })
 );
+
+// Signature and stamp — same upload pattern as the profile photo, but no
+// public GET endpoint: these are only ever read server-side (via
+// getObjectBytes, private) when a PDF is being generated, never shown
+// directly to anyone.
+for (const kind of ['signature', 'stamp'] as const) {
+  const dbField = kind === 'signature' ? 'signatureKey' : 'stampKey';
+
+  doctorsRouter.post(
+    `/me/${kind}/upload-url`,
+    requireAuth('doctor'),
+    asyncHandler(async (req: AuthedRequest, res) => {
+      const { file_name, content_type } = req.body;
+      if (!file_name || !content_type) {
+        return res.status(400).json({ success: false, error: 'file_name and content_type are required' });
+      }
+      if (!content_type.startsWith('image/')) {
+        return res.status(400).json({ success: false, error: 'content_type must be an image type' });
+      }
+      const result = await getUploadUrl(`doctors/${req.user!.sub}/${kind}`, file_name, content_type);
+      res.json({ success: true, upload_url: result.uploadUrl, key: result.key });
+    })
+  );
+
+  doctorsRouter.post(
+    `/me/${kind}`,
+    requireAuth('doctor'),
+    asyncHandler(async (req: AuthedRequest, res) => {
+      const { key } = req.body;
+      if (!key) return res.status(400).json({ success: false, error: 'key is required' });
+      if (!key.startsWith(`doctors/${req.user!.sub}/${kind}/`)) {
+        return res.status(400).json({ success: false, error: 'invalid_key' });
+      }
+      await prisma.doctor.update({ where: { id: req.user!.sub }, data: { [dbField]: key } });
+      res.json({ success: true });
+    })
+  );
+}
 
 // Presigned upload URL for KYC documents — the client uploads directly to
 // object storage, then submits the resulting keys via POST /kyc below.

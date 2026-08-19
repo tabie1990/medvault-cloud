@@ -85,7 +85,7 @@ appointmentsRouter.get(
     const appointments = await prisma.appointment.findMany({
       where: { doctorId: req.user!.sub },
       include: { telemedicineSession: true },
-      orderBy: { requestedDate: 'asc' }
+      orderBy: { createdAt: 'desc' }
     });
     // Appointment.globalPatientId is a loose string, not a formal Prisma
     // relation — a real, pre-existing gap the doctor's own view never
@@ -105,6 +105,22 @@ appointmentsRouter.get(
         : null
     }));
     res.json({ success: true, appointments: withPatientDetails });
+  })
+);
+
+// A doctor marking their own appointment complete — separate from
+// paymentStatus/telemedicineSession, since "the consultation actually
+// happened" is a distinct fact a doctor states themselves, not something
+// derivable from payment or room state alone.
+appointmentsRouter.patch(
+  '/:id/complete',
+  requireAuth('doctor'),
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const appt = await prisma.appointment.findUnique({ where: { id: req.params.id } });
+    if (!appt) return res.status(404).json({ success: false, error: 'appointment_not_found' });
+    if (appt.doctorId !== req.user!.sub) return res.status(403).json({ success: false, error: 'not_your_appointment' });
+    const updated = await prisma.appointment.update({ where: { id: req.params.id }, data: { status: 'completed' } });
+    res.json({ success: true, appointment: updated });
   })
 );
 

@@ -75,12 +75,9 @@ const RESTART_PATTERN = /\b(start\s*(all\s*)?over|restart|reset|start\s*again|re
  * this hands it the current, verified fact directly, every turn,
  * whether it asks for it or not.
  */
-async function buildPendingInstantConsultNote(globalPatientId: string | null): Promise<string | null> {
-  if (!globalPatientId) {
-    console.log('[pending-consult-note] no globalPatientId on contact — skipping');
-    return null;
-  }
-  const appt = await prisma.appointment.findFirst({
+async function findPendingUnpaidInstantConsult(globalPatientId: string | null) {
+  if (!globalPatientId) return null;
+  return prisma.appointment.findFirst({
     where: {
       globalPatientId,
       channel: 'ben_instant_consult',
@@ -90,6 +87,14 @@ async function buildPendingInstantConsultNote(globalPatientId: string | null): P
     orderBy: { createdAt: 'desc' },
     include: { doctor: { select: { fullName: true, teleconsultFee: true } } }
   });
+}
+
+async function buildPendingInstantConsultNote(globalPatientId: string | null): Promise<string | null> {
+  if (!globalPatientId) {
+    console.log('[pending-consult-note] no globalPatientId on contact — skipping');
+    return null;
+  }
+  const appt = await findPendingUnpaidInstantConsult(globalPatientId);
   if (!appt) {
     console.log(`[pending-consult-note] no matching unpaid instant-consult appointment for globalPatientId=${globalPatientId}`);
     return null;
@@ -102,6 +107,61 @@ async function buildPendingInstantConsultNote(globalPatientId: string | null): P
     `Do NOT tell the patient a doctor hasn't accepted yet or that you're still waiting — that would be wrong. ` +
     `If the patient's next message could be a Mobile Money number or a question about status or payment, treat it as such immediately and call request_appointment_payment with appointment_ref "${appt.appointmentRef}" — do not ask them to confirm the number first.`
   );
+}
+
+/**
+ * A message that's essentially just a phone number and nothing else —
+ * the shape of a Mobile Money reply, not a menu choice ("1", "2") or
+ * general conversation. Deliberately requires 8+ digits so short menu
+ * selections never match.
+ */
+function looksLikeBarePhoneNumber(text: string): boolean {
+  const stripped = text.trim().replace(/[\s\-()]/g, '');
+  return /^\+?\d{8,13}$/.test(stripped);
+}
+
+/**
+ * Charges the fee on file for an appointment and sends the confirmation
+ * directly — the actual charging + messaging logic behind the
+ * request_appointment_payment tool, pulled out so it can ALSO be called
+ * directly from handleIncomingWhatsAppMessage's deterministic
+ * bare-phone-number intercept below, bypassing the model entirely for
+ * that one case. Extracted after real testing showed the model ignoring
+ * even an explicit, verified "a doctor already accepted" fact injected
+ * directly into its own system prompt for that exact request — at that
+ * point, no amount of instruction placement was going to fix it
+ * reliably, and this specific scenario (bare phone number + a known
+ * pending unpaid instant-consult appointment) is narrow and unambiguous
+ * enough to just handle deterministically instead, the same way the
+ * welcome menu is.
+ */
+async function chargeAppointmentAndNotify(
+  appt: { id: string; appointmentRef: string; appointmentType: string; doctorId: string | null; hospitalId: string | null },
+  phone: string,
+  waPhoneNumber: string
+): Promise<{ success: boolean; error?: string }> {
+  let fee: number | null = null;
+  if (appt.appointmentType === 'teleconsult' && appt.doctorId) {
+    const doctor = await prisma.doctor.findUnique({ where: { id: appt.doctorId } });
+    fee = doctor?.teleconsultFee ? Number(doctor.teleconsultFee) : null;
+  } else if (appt.appointmentType === 'in_person' && appt.hospitalId) {
+    const hospital = await prisma.hospital.findUnique({ where: { hospitalId: appt.hospitalId } });
+    fee = hospital?.flatBookingFee ? Number(hospital.flatBookingFee) : null;
+  }
+  if (!fee) return { success: false, error: 'no_fee_on_file' };
+  try {
+    const data = await requestPayment(appt.id, phone, fee);
+    const ussdLine = data.ussd_code
+      ? `Dial *${data.ussd_code}*${data.operator ? ` (${data.operator})` : ''} on your phone to complete the payment.`
+      : `Check your phone for the Mobile Money prompt to complete the payment.`;
+    await sendTextMessage(
+      waPhoneNumber,
+      `💰 *Payment requested!*\n\n${ussdLine}\n\nAmount: *${fee.toLocaleString()} XAF*\nAppointment ref: ${appt.appointmentRef}`
+    );
+    return { success: true };
+  } catch (e: any) {
+    return { success: false, error: e.message };
+  }
 }
 const MAX_STORED_TURNS = 8;
 
@@ -790,36 +850,15 @@ async function executeTool(
       if (!fee) {
         return JSON.stringify({ error: 'no_fee_on_file', message: 'This provider has no fee on file for this appointment type — escalate to a human rather than asking the patient what to charge.' });
       }
-      try {
-        const data = await requestPayment(appt.id, input.phone, fee);
-        // Sent directly here, not left to the model to narrate — found
-        // via a real case where the actual Campay charge was correctly
-        // 20 XAF (the fee lookup above is what's charged, always
-        // correct) but the model's own natural-language confirmation to
-        // the patient said "20,000 XAF" anyway, misquoting a number it
-        // had just been given. Same root cause as the menu-text problem:
-        // the model doesn't reliably reproduce a value verbatim even
-        // when it's right there in the tool result. The USSD code and
-        // operator name come directly from Campay's own response too,
-        // rather than the model guessing "MTN" and "*126#" as it had
-        // been — those were never actually verified against real data
-        // either.
-        const ussdLine = data.ussd_code
-          ? `Dial *${data.ussd_code}*${data.operator ? ` (${data.operator})` : ''} on your phone to complete the payment.`
-          : `Check your phone for the Mobile Money prompt to complete the payment.`;
-        await sendTextMessage(
-          contact.waPhoneNumber,
-          `💰 *Payment requested!*\n\n${ussdLine}\n\nAmount: *${fee.toLocaleString()} XAF*\nAppointment ref: ${appt.appointmentRef}`
-        );
-        return JSON.stringify({
-          success: true,
-          amount_charged: fee,
-          ...data,
-          note: 'This confirmation, including the exact amount and USSD instructions, was already sent directly to the patient. Do not restate the amount or USSD code yourself — a brief acknowledgment is enough if anything.'
-        });
-      } catch (e: any) {
-        return JSON.stringify({ error: e.message });
+      const result = await chargeAppointmentAndNotify(appt, input.phone, contact.waPhoneNumber);
+      if (!result.success) {
+        return JSON.stringify({ error: result.error });
       }
+      return JSON.stringify({
+        success: true,
+        amount_charged: fee,
+        note: 'This confirmation, including the exact amount and USSD instructions, was already sent directly to the patient. Do not restate the amount or USSD code yourself — a brief acknowledgment is enough if anything.'
+      });
     }
 
     case 'list_lab_providers': {
@@ -1199,6 +1238,31 @@ export async function handleIncomingWhatsAppMessage(phone: string, text: string)
     // handing this specific step off to the model.
     await sendTextMessage(phone, LANGUAGE_PROMPT);
     return;
+  }
+
+  // Deterministic bare-phone-number intercept — bypasses the model
+  // entirely, the same way the welcome menu does. Added after real
+  // testing showed the model still saying "waiting for a doctor to
+  // accept" even with an explicit, verified "a doctor ALREADY accepted"
+  // fact injected directly into its own system prompt for that exact
+  // request (see buildPendingInstantConsultNote below) — at that point
+  // more instruction placement wasn't going to fix it reliably, and this
+  // specific scenario is narrow and unambiguous enough to just handle in
+  // code. Only fires when the message is essentially just a phone
+  // number AND there's a genuine pending unpaid instant-consult
+  // appointment on file — anything else still goes to the model as
+  // normal.
+  if (looksLikeBarePhoneNumber(text)) {
+    const pendingAppt = await findPendingUnpaidInstantConsult(contact.globalPatientId);
+    if (pendingAppt) {
+      console.log(`[bare-phone-intercept] charging appointmentRef=${pendingAppt.appointmentRef} directly, bypassing the model`);
+      const result = await chargeAppointmentAndNotify(pendingAppt, text, phone);
+      if (!result.success) {
+        await logError('bare_phone_intercept_charge_failed', new Error(JSON.stringify({ appointmentRef: pendingAppt.appointmentRef, error: result.error })));
+        await sendTextMessage(phone, `A doctor has already accepted your request, but something went wrong requesting payment — our team has been notified and will follow up shortly.`);
+      }
+      return;
+    }
   }
 
   let finalText: string;

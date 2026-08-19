@@ -362,6 +362,13 @@ model Doctor {
   // the bytes through our own server so the response can carry a real
   // Cache-Control header regardless of the presigned URL's own expiry.
   profilePhotoKey     String?
+  // Signature and stamp images, embedded into generated prescription/lab-
+  // request PDFs. Private-only, same as profilePhotoKey's storage
+  // pattern, but never served through a public endpoint the way the
+  // photo is — these are only ever read server-side while building a
+  // PDF, never shown directly to a patient or fetched by a browser.
+  signatureKey        String?
+  stampKey            String?
   // Explicit opt-in for the WhatsApp "first doctor to accept" instant
   // teleconsult flow. Deliberately separate from verificationStatus and
   // from having a phone number on file — a verified doctor with a phone
