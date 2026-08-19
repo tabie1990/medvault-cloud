@@ -2,6 +2,25 @@ import { prisma } from '../db/prisma.js';
 import { generateRef } from './id.service.js';
 import PDFDocument from 'pdfkit';
 import { uploadBuffer, getDownloadUrl, getObjectBytes } from './storage.service.js';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+// Read once at module load, not per-PDF — this is a static brand asset,
+// not something that changes per request. Same repo-root-relative
+// pattern as SYSTEM_PROMPT in ai-agent.service.ts: untouched by tsc,
+// reachable the same way from compiled dist/ output.
+const LOGO_PATH = join(__dirname, '../../assets/medvault-logo.png');
+let logoBuffer: Buffer | null = null;
+try {
+  logoBuffer = readFileSync(LOGO_PATH);
+} catch {
+  // Missing asset shouldn't ever break prescription generation — the PDF
+  // just renders without the logo if it's not there.
+  logoBuffer = null;
+}
 
 interface PrescriptionItem {
   type: 'medication' | 'lab_request' | 'imaging_request';
@@ -81,6 +100,16 @@ export async function generatePrescriptionPdf(prescriptionId: string): Promise<{
   const chunks: Buffer[] = [];
   doc.on('data', (chunk) => chunks.push(chunk));
   const done = new Promise<Buffer>((resolve) => doc.on('end', () => resolve(Buffer.concat(chunks))));
+
+  if (logoBuffer) {
+    try {
+      doc.image(logoBuffer, 50, 45, { width: 160 });
+      doc.moveDown(3);
+    } catch {
+      // Corrupted/unsupported logo file — skip rather than fail the
+      // whole prescription over a header image.
+    }
+  }
 
   doc.fontSize(18).fillColor('#1B2A4A').text('MedVAULT Prescription', { align: 'left' });
   doc.moveDown(0.3);

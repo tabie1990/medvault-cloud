@@ -5,7 +5,7 @@ import { prisma } from '../db/prisma.js';
 import { generateRef, generateTempPassword } from '../services/id.service.js';
 import { signToken } from '../services/jwt.service.js';
 import { sendWelcomeCredentialsEmail } from '../services/email.service.js';
-import { getUploadUrl, getObjectBytes } from '../services/storage.service.js';
+import { getUploadUrl, getObjectBytes, objectExists } from '../services/storage.service.js';
 import { setAvailability, getAvailability, getSlotsForNextDays } from '../services/availability.service.js';
 import { requireAuth, type AuthedRequest } from '../middleware/auth.middleware.js';
 import { asyncHandler } from '../middleware/error.middleware.js';
@@ -354,6 +354,13 @@ doctorsRouter.post(
     if (!key.startsWith(`doctors/${req.user!.sub}/profile-photo/`)) {
       return res.status(400).json({ success: false, error: 'invalid_key' });
     }
+    if (!(await objectExists(key))) {
+      return res.status(400).json({
+        success: false,
+        error: 'upload_verification_failed',
+        message: 'The uploaded file could not be confirmed in storage — please try uploading again.'
+      });
+    }
     await prisma.doctor.update({ where: { id: req.user!.sub }, data: { profilePhotoKey: key } });
     res.json({ success: true, photo_url: `${env.apiBaseUrl}/api/v1/doctors/${req.user!.sub}/photo` });
   })
@@ -407,6 +414,13 @@ for (const kind of ['signature', 'stamp'] as const) {
       if (!key) return res.status(400).json({ success: false, error: 'key is required' });
       if (!key.startsWith(`doctors/${req.user!.sub}/${kind}/`)) {
         return res.status(400).json({ success: false, error: 'invalid_key' });
+      }
+      if (!(await objectExists(key))) {
+        return res.status(400).json({
+          success: false,
+          error: 'upload_verification_failed',
+          message: 'The uploaded file could not be confirmed in storage — please try uploading again.'
+        });
       }
       await prisma.doctor.update({ where: { id: req.user!.sub }, data: { [dbField]: key } });
       res.json({ success: true });

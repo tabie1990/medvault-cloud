@@ -1,4 +1,4 @@
-import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, PutObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import crypto from 'crypto';
 import { env } from '../config/env.js';
@@ -71,6 +71,25 @@ export async function uploadBuffer(keyPrefix: string, fileName: string, contentT
 
 export function storageConfigured(): boolean {
   return isConfigured();
+}
+
+/**
+ * A real B2 existence check, not an assumption — added after a real case
+ * where a confirmed upload (client got a 200 from the presigned PUT, our
+ * own confirm endpoint got a 200 too) still resulted in the object not
+ * actually being readable later, silently, only surfacing as a failure
+ * when a PDF tried to embed it. Whatever caused that specific gap isn't
+ * fully diagnosed yet — this doesn't explain it, it just makes sure it
+ * can never again result in a broken key silently saved to the database.
+ */
+export async function objectExists(key: string): Promise<boolean> {
+  if (!isConfigured()) return false;
+  try {
+    await client().send(new HeadObjectCommand({ Bucket: env.b2Bucket, Key: key }));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
