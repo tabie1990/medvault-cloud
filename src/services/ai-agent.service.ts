@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { prisma } from '../db/prisma.js';
 import { env } from '../config/env.js';
-import { sendTextMessage, sendDocumentMessage } from './whatsapp.service.js';
+import { sendTextMessage, sendDocumentMessage, sendImageMessage } from './whatsapp.service.js';
 import { generateVaccinationReportPdf } from './pediatric-report.service.js';
 import { createAppointment } from './appointment.service.js';
 import { createInstantRequest } from './teleconsult-request.service.js';
@@ -125,13 +125,23 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: 'list_doctors',
-    description: 'List verified doctors available for teleconsult. Filter by specialty, or by name if the patient asks for a specific doctor by name — use name, not specialty, when they mention a doctor\'s name.',
+    description: 'List verified doctors available for teleconsult. Filter by specialty, or by name if the patient asks for a specific doctor by name — use name, not specialty, when they mention a doctor\'s name. Each result includes has_photo — use send_doctor_photo once the patient has picked a specific doctor if it\'s true.',
     input_schema: {
       type: 'object',
       properties: {
         specialty: { type: 'string' },
         name: { type: 'string', description: "The doctor's name or part of it, if the patient asked for someone specific" }
       }
+    }
+  },
+  {
+    name: 'send_doctor_photo',
+    description:
+      "Sends the doctor's actual profile photo as a WhatsApp image message. Call this once, right when the patient has picked a specific doctor from list_doctors and has_photo was true for that doctor — not for every doctor in a list, and not more than once per doctor per conversation. Only works for cloud-registered doctors (list_doctors); hospital roster doctors (get_hospital_doctors) don't have photos. Purely visual — doesn't replace or change anything about the booking flow itself.",
+    input_schema: {
+      type: 'object',
+      properties: { doctor_id: { type: 'string' } },
+      required: ['doctor_id']
     }
   },
   {
@@ -478,9 +488,33 @@ async function executeTool(
           name: d.fullName,
           specialty: d.specialty,
           consultation_types: d.consultationTypes,
-          teleconsult_fee: d.teleconsultFee ? Number(d.teleconsultFee) : null
+          teleconsult_fee: d.teleconsultFee ? Number(d.teleconsultFee) : null,
+          // profilePhotoKey isn't public, and the presence of a photo
+          // isn't worth adding to the query filter above — but exposing
+          // whether one exists is what makes send_doctor_photo usable at
+          // all; without this the model has no way to know a photo
+          // exists to send.
+          has_photo: Boolean(d.profilePhotoKey)
         }))
       );
+    }
+
+    case 'send_doctor_photo': {
+      const doctor = await prisma.doctor.findUnique({ where: { id: input.doctor_id } });
+      if (!doctor?.profilePhotoKey) {
+        return JSON.stringify({ sent: false, reason: 'no_photo_on_file' });
+      }
+      try {
+        // sendImageMessage needs a URL Meta's servers can fetch directly
+        // at send time — the public proxy endpoint works fine for this
+        // even though it's also what the patient portal's <img> tags use,
+        // since Meta just fetches it once immediately, the same as any
+        // other outbound link (see sendDocumentMessage's own reasoning).
+        await sendImageMessage(contact.waPhoneNumber, `${env.apiBaseUrl}/api/v1/doctors/${doctor.id}/photo`, doctor.fullName);
+        return JSON.stringify({ sent: true });
+      } catch (e: any) {
+        return JSON.stringify({ sent: false, reason: e.message });
+      }
     }
 
     case 'get_doctor_availability': {
