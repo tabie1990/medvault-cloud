@@ -101,15 +101,26 @@ export async function generatePrescriptionPdf(prescriptionId: string): Promise<{
   doc.on('data', (chunk) => chunks.push(chunk));
   const done = new Promise<Buffer>((resolve) => doc.on('end', () => resolve(Buffer.concat(chunks))));
 
+  // Logo's real aspect ratio is 888:406 (~2.19:1) — computed here rather
+  // than eyeballing a moveDown() count, which is exactly what caused the
+  // title to overlap the bottom of the logo before: moveDown() advances
+  // a fixed number of text-line-heights, with no idea how tall an image
+  // placed at an explicit x/y actually is.
+  const LOGO_WIDTH = 130;
+  const LOGO_ASPECT_RATIO = 888 / 406;
+  const LOGO_TOP = 45;
+  let contentTop = LOGO_TOP;
   if (logoBuffer) {
     try {
-      doc.image(logoBuffer, 50, 45, { width: 160 });
-      doc.moveDown(3);
+      const logoHeight = LOGO_WIDTH / LOGO_ASPECT_RATIO;
+      doc.image(logoBuffer, 50, LOGO_TOP, { width: LOGO_WIDTH });
+      contentTop = LOGO_TOP + logoHeight + 15;
     } catch {
       // Corrupted/unsupported logo file — skip rather than fail the
       // whole prescription over a header image.
     }
   }
+  doc.y = contentTop;
 
   doc.fontSize(18).fillColor('#1B2A4A').text('MedVAULT Prescription', { align: 'left' });
   doc.moveDown(0.3);
