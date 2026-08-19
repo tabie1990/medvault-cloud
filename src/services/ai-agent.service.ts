@@ -25,6 +25,31 @@ import { logError } from './error-log.service.js';
 const MODEL = 'claude-haiku-4-5-20251001'; // cheapest capable Anthropic model — fits a bounded conversational task
 const OPENAI_MODEL = 'gpt-4o-mini'; // chosen specifically for cost comparison against Haiku, still handles tool-calling well
 const MAX_TOOL_ITERATIONS = 4;
+
+// The language prompt and welcome menu are fixed, non-personalized text
+// with zero need for the model to generate them at all — sent directly
+// from handleIncomingWhatsAppMessage's fresh-conversation branch below,
+// never through the model. Found via repeated real testing where the
+// model reconstructed the menu "from gist" differently on nearly every
+// attempt (a missing item, a reworded item, an invented item that
+// doesn't exist) despite explicit "copy this exactly" instructions — a
+// known LLM verbatim-reproduction limit, not something more prompt
+// wording fixes. Keep these two strings in sync with Section 4 of
+// prompts/whatsapp-agent-system-prompt.md by hand; there's no single
+// source of truth linking the two files.
+const LANGUAGE_PROMPT = `🌍 Which language would you like to use?\n1️⃣ 🇬🇧 English\n2️⃣ 🇫🇷 Français`;
+
+const WELCOME_MENU: Record<'en' | 'fr', string> = {
+  en: `👋 Welcome to MedVAULT. How can I help you today?\n1️⃣ 🏥 Book a hospital appointment\n2️⃣ 🧪 Book a laboratory test\n3️⃣ 💻 Book an online teleconsultation\n4️⃣ 👶 Child vaccination tracking\n5️⃣ ❓ General inquiry`,
+  fr: `👋 Bienvenue sur MedVAULT. Comment puis-je vous aider aujourd'hui ?\n1️⃣ 🏥 Prendre un rendez-vous à l'hôpital\n2️⃣ 🧪 Réserver un examen de laboratoire\n3️⃣ 💻 Réserver une téléconsultation\n4️⃣ 👶 Suivi de vaccination de l'enfant\n5️⃣ ❓ Demande générale`
+};
+
+function detectLanguageChoice(text: string): 'en' | 'fr' | null {
+  const t = text.trim().toLowerCase();
+  if (['1', 'english', 'anglais', 'en'].includes(t) || t.includes('🇬🇧')) return 'en';
+  if (['2', 'french', 'français', 'francais', 'fr'].includes(t) || t.includes('🇫🇷')) return 'fr';
+  return null;
+}
 const MAX_STORED_TURNS = 8;
 
 // Same reasoning as the day-name fix elsewhere in this file — a tool
@@ -482,8 +507,16 @@ async function executeTool(
         },
         take: 10
       });
-      return JSON.stringify(
-        doctors.map((d: any) => ({
+      return JSON.stringify({
+        // Repeated here, not just once in the system prompt — a
+        // reminder placed right at the point of decision is followed
+        // more reliably than one stated only at the top of a long
+        // prompt read many turns ago. Found via real testing where the
+        // model showed this exact list before ever offering the instant-
+        // vs-scheduled choice, then only corrected itself once directly
+        // challenged.
+        reminder: 'If you have not already asked whether the patient wants an instant or a scheduled teleconsult, ask before doing anything else with this list.',
+        doctors: doctors.map((d: any) => ({
           id: d.id,
           name: d.fullName,
           specialty: d.specialty,
@@ -496,7 +529,7 @@ async function executeTool(
           // exists to send.
           has_photo: Boolean(d.profilePhotoKey)
         }))
-      );
+      });
     }
 
     case 'send_doctor_photo': {
@@ -953,6 +986,10 @@ async function runOpenAIAgent(
     const response = await openai.chat.completions.create({
       model: OPENAI_MODEL,
       max_tokens: 512,
+      // Same reasoning as the Anthropic path's temperature setting —
+      // this agent needs to reproduce fixed text and follow explicit
+      // procedure exactly, not vary creatively.
+      temperature: 0.2,
       tools: openaiTools,
       messages
     });
@@ -1012,6 +1049,51 @@ export async function handleIncomingWhatsAppMessage(phone: string, text: string)
   // guarantee to preserve history across a live provider switch.
   const priorTurns = storedState.provider === activeProvider && Array.isArray(storedState.turns) ? storedState.turns : [];
 
+  // Brand-new conversation — send the fixed language prompt directly,
+  // no model call at all, and wait for the reply. See the constants
+  // above for why this bypasses the model entirely rather than asking
+  // it to reproduce this text.
+  if (priorTurns.length === 0 && !storedState.awaitingLanguageChoice) {
+    await sendTextMessage(phone, LANGUAGE_PROMPT);
+    await prisma.whatsAppContact.update({
+      where: { id: contact.id },
+      data: { conversationState: { ...storedState, awaitingLanguageChoice: true } }
+    });
+    return;
+  }
+
+  // Reply to the language prompt — send the fixed welcome menu directly
+  // in the chosen language, then seed the model's own turn history with
+  // this exact exchange so later turns know the language and know the
+  // menu was already shown (matching the "don't re-show this menu"
+  // instruction already in the system prompt), without ever having
+  // asked the model to generate either message itself.
+  if (storedState.awaitingLanguageChoice && priorTurns.length === 0) {
+    const lang = detectLanguageChoice(text);
+    if (lang) {
+      const menu = WELCOME_MENU[lang];
+      await sendTextMessage(phone, menu);
+      await prisma.whatsAppContact.update({
+        where: { id: contact.id },
+        data: {
+          conversationState: {
+            provider: activeProvider,
+            awaitingLanguageChoice: false,
+            turns: [
+              { role: 'user', content: text },
+              { role: 'assistant', content: menu }
+            ]
+          }
+        }
+      });
+      return;
+    }
+    // Didn't parse as a language choice — re-ask rather than guessing or
+    // handing this specific step off to the model.
+    await sendTextMessage(phone, LANGUAGE_PROMPT);
+    return;
+  }
+
   let finalText: string;
   let messagesToStore: unknown;
 
@@ -1034,6 +1116,15 @@ export async function handleIncomingWhatsAppMessage(phone: string, text: string)
       const response = await anthropic.messages.create({
         model: MODEL,
         max_tokens: 512,
+        // This agent has to reproduce fixed text (the menu, exact
+        // policy rules) and follow explicit procedure exactly — that's
+        // the opposite of what a high, creativity-tuned default
+        // temperature is good for. Found via repeated real cases where
+        // the model paraphrased a supposedly-fixed menu item differently
+        // on nearly every attempt despite explicit "copy this exactly"
+        // instructions; low temperature won't make instruction-following
+        // perfect, but it materially reduces this specific failure mode.
+        temperature: 0.2,
         system: SYSTEM_PROMPT,
         tools,
         messages
