@@ -739,7 +739,31 @@ async function executeTool(
       }
       try {
         const data = await requestPayment(appt.id, input.phone, fee);
-        return JSON.stringify({ success: true, amount_charged: fee, ...data });
+        // Sent directly here, not left to the model to narrate — found
+        // via a real case where the actual Campay charge was correctly
+        // 20 XAF (the fee lookup above is what's charged, always
+        // correct) but the model's own natural-language confirmation to
+        // the patient said "20,000 XAF" anyway, misquoting a number it
+        // had just been given. Same root cause as the menu-text problem:
+        // the model doesn't reliably reproduce a value verbatim even
+        // when it's right there in the tool result. The USSD code and
+        // operator name come directly from Campay's own response too,
+        // rather than the model guessing "MTN" and "*126#" as it had
+        // been — those were never actually verified against real data
+        // either.
+        const ussdLine = data.ussd_code
+          ? `Dial *${data.ussd_code}*${data.operator ? ` (${data.operator})` : ''} on your phone to complete the payment.`
+          : `Check your phone for the Mobile Money prompt to complete the payment.`;
+        await sendTextMessage(
+          contact.waPhoneNumber,
+          `💰 *Payment requested!*\n\n${ussdLine}\n\nAmount: *${fee.toLocaleString()} XAF*\nAppointment ref: ${appt.appointmentRef}`
+        );
+        return JSON.stringify({
+          success: true,
+          amount_charged: fee,
+          ...data,
+          note: 'This confirmation, including the exact amount and USSD instructions, was already sent directly to the patient. Do not restate the amount or USSD code yourself — a brief acknowledgment is enough if anything.'
+        });
       } catch (e: any) {
         return JSON.stringify({ error: e.message });
       }
@@ -796,7 +820,19 @@ async function executeTool(
       }
       try {
         const data = await requestLabPayment(order.id, input.phone, fee);
-        return JSON.stringify({ success: true, amount_charged: fee, ...data });
+        const ussdLine = data.ussd_code
+          ? `Dial *${data.ussd_code}*${data.operator ? ` (${data.operator})` : ''} on your phone to complete the payment.`
+          : `Check your phone for the Mobile Money prompt to complete the payment.`;
+        await sendTextMessage(
+          contact.waPhoneNumber,
+          `💰 *Payment requested!*\n\n${ussdLine}\n\nAmount: *${fee.toLocaleString()} XAF*\nOrder ref: ${order.orderRef}`
+        );
+        return JSON.stringify({
+          success: true,
+          amount_charged: fee,
+          ...data,
+          note: 'This confirmation, including the exact amount and USSD instructions, was already sent directly to the patient. Do not restate the amount or USSD code yourself — a brief acknowledgment is enough if anything.'
+        });
       } catch (e: any) {
         return JSON.stringify({ error: e.message });
       }
