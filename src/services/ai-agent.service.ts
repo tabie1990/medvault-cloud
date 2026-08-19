@@ -50,6 +50,52 @@ function detectLanguageChoice(text: string): 'en' | 'fr' | null {
   if (['2', 'french', 'français', 'francais', 'fr'].includes(t) || t.includes('🇫🇷')) return 'fr';
   return null;
 }
+
+// Explicit restart requests — found via real testing showing this is
+// actually the MOST common way the menu gets tested/re-triggered, not
+// an edge case: "start over," "reset," "recommencer," etc. Checked
+// before anything else so a restart gets the exact same guaranteed-
+// correct hardcoded menu a brand-new contact does, rather than falling
+// through to the model to regenerate from scratch (and reproduce the
+// same verbatim-text unreliability all over again).
+const RESTART_PATTERN = /\b(start\s*(all\s*)?over|restart|reset|start\s*again|recommenc|reinitial|réinitial)/i;
+
+/**
+ * Looks up whether this patient currently has an instant-consult
+ * appointment a doctor has already accepted but that isn't paid yet, and
+ * returns a short factual note to append to the system prompt for this
+ * one request if so — or null if not. Run fresh from the database on
+ * every single incoming message, never cached or remembered from
+ * conversation history. This exists because the model's own memory of
+ * "has a doctor accepted" repeatedly proved unreliable in real testing —
+ * it would confidently tell the patient to keep waiting well after
+ * acceptance, since that event happens entirely outside its own
+ * conversation loop (see doctor-whatsapp.service.ts). Rather than hoping
+ * the model remembers to call get_my_recent_appointments on its own,
+ * this hands it the current, verified fact directly, every turn,
+ * whether it asks for it or not.
+ */
+async function buildPendingInstantConsultNote(globalPatientId: string | null): Promise<string | null> {
+  if (!globalPatientId) return null;
+  const appt = await prisma.appointment.findFirst({
+    where: {
+      globalPatientId,
+      channel: 'ben_instant_consult',
+      paymentStatus: { not: 'paid' },
+      createdAt: { gt: new Date(Date.now() - 30 * 60 * 1000) }
+    },
+    orderBy: { createdAt: 'desc' },
+    include: { doctor: { select: { fullName: true, teleconsultFee: true } } }
+  });
+  if (!appt) return null;
+  return (
+    `CURRENT VERIFIED FACT (from the database, not your memory — this is always current): ` +
+    `this patient has an instant teleconsult appointment (ref ${appt.appointmentRef}) that Dr. ${appt.doctor?.fullName ?? 'the doctor'} has ALREADY ACCEPTED. ` +
+    `It is not yet paid (fee: ${appt.doctor?.teleconsultFee ? Number(appt.doctor.teleconsultFee) : 'unknown'} XAF). ` +
+    `Do NOT tell the patient a doctor hasn't accepted yet or that you're still waiting — that would be wrong. ` +
+    `If the patient's next message could be a Mobile Money number or a question about status or payment, treat it as such immediately and call request_appointment_payment with appointment_ref "${appt.appointmentRef}" — do not ask them to confirm the number first.`
+  );
+}
 const MAX_STORED_TURNS = 8;
 
 // Same reasoning as the day-name fix elsewhere in this file — a tool
@@ -1007,12 +1053,13 @@ function toOpenAITools(anthropicTools: Anthropic.Tool[]): OpenAI.Chat.ChatComple
 async function runOpenAIAgent(
   contact: { id: string; globalPatientId: string | null; waPhoneNumber: string },
   priorTurns: OpenAI.Chat.ChatCompletionMessageParam[],
-  userText: string
+  userText: string,
+  systemNote: string | null
 ): Promise<{ finalText: string; messages: OpenAI.Chat.ChatCompletionMessageParam[]; contact: typeof contact }> {
   const openai = new OpenAI({ apiKey: env.openaiApiKey });
   const openaiTools = toOpenAITools(tools);
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: systemNote ? `${SYSTEM_PROMPT}\n\n---\n${systemNote}` : SYSTEM_PROMPT },
     ...priorTurns,
     { role: 'user', content: userText }
   ];
@@ -1083,7 +1130,24 @@ export async function handleIncomingWhatsAppMessage(phone: string, text: string)
   // call semantics differ enough that a faithful conversion isn't worth
   // the complexity for what is, right now, an A/B cost comparison, not a
   // guarantee to preserve history across a live provider switch.
-  const priorTurns = storedState.provider === activeProvider && Array.isArray(storedState.turns) ? storedState.turns : [];
+  let priorTurns = storedState.provider === activeProvider && Array.isArray(storedState.turns) ? storedState.turns : [];
+
+  // An explicit restart request on an EXISTING conversation is treated
+  // exactly like a brand-new one from here on — same hardcoded path,
+  // same guarantee. Found via real testing: "start over" turned out to
+  // be the most common way this gets tested, not a rare edge case, and
+  // it was falling through to the model to regenerate the menu from
+  // scratch every time, reintroducing the exact verbatim-text
+  // unreliability the hardcoded path exists to eliminate.
+  if (RESTART_PATTERN.test(text) && (priorTurns.length > 0 || storedState.awaitingLanguageChoice)) {
+    priorTurns = [];
+    await sendTextMessage(phone, LANGUAGE_PROMPT);
+    await prisma.whatsAppContact.update({
+      where: { id: contact.id },
+      data: { conversationState: { awaitingLanguageChoice: true } }
+    });
+    return;
+  }
 
   // Brand-new conversation — send the fixed language prompt directly,
   // no model call at all, and wait for the reply. See the constants
@@ -1133,11 +1197,14 @@ export async function handleIncomingWhatsAppMessage(phone: string, text: string)
   let finalText: string;
   let messagesToStore: unknown;
 
+  const pendingConsultNote = await buildPendingInstantConsultNote(contact.globalPatientId);
+
   if (activeProvider === 'openai') {
     const result = await runOpenAIAgent(
       { id: contact.id, globalPatientId: contact.globalPatientId, waPhoneNumber: contact.waPhoneNumber },
       priorTurns,
-      text
+      text,
+      pendingConsultNote
     );
     finalText = result.finalText;
     messagesToStore = result.messages;
@@ -1161,7 +1228,7 @@ export async function handleIncomingWhatsAppMessage(phone: string, text: string)
         // instructions; low temperature won't make instruction-following
         // perfect, but it materially reduces this specific failure mode.
         temperature: 0.2,
-        system: SYSTEM_PROMPT,
+        system: pendingConsultNote ? `${SYSTEM_PROMPT}\n\n---\n${pendingConsultNote}` : SYSTEM_PROMPT,
         tools,
         messages
       });
