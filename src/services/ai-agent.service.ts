@@ -76,7 +76,10 @@ const RESTART_PATTERN = /\b(start\s*(all\s*)?over|restart|reset|start\s*again|re
  * whether it asks for it or not.
  */
 async function buildPendingInstantConsultNote(globalPatientId: string | null): Promise<string | null> {
-  if (!globalPatientId) return null;
+  if (!globalPatientId) {
+    console.log('[pending-consult-note] no globalPatientId on contact — skipping');
+    return null;
+  }
   const appt = await prisma.appointment.findFirst({
     where: {
       globalPatientId,
@@ -87,7 +90,11 @@ async function buildPendingInstantConsultNote(globalPatientId: string | null): P
     orderBy: { createdAt: 'desc' },
     include: { doctor: { select: { fullName: true, teleconsultFee: true } } }
   });
-  if (!appt) return null;
+  if (!appt) {
+    console.log(`[pending-consult-note] no matching unpaid instant-consult appointment for globalPatientId=${globalPatientId}`);
+    return null;
+  }
+  console.log(`[pending-consult-note] FOUND appointmentRef=${appt.appointmentRef} paymentStatus=${appt.paymentStatus} channel=${appt.channel} createdAt=${appt.createdAt.toISOString()}`);
   return (
     `CURRENT VERIFIED FACT (from the database, not your memory — this is always current): ` +
     `this patient has an instant teleconsult appointment (ref ${appt.appointmentRef}) that Dr. ${appt.doctor?.fullName ?? 'the doctor'} has ALREADY ACCEPTED. ` +
@@ -1198,6 +1205,7 @@ export async function handleIncomingWhatsAppMessage(phone: string, text: string)
   let messagesToStore: unknown;
 
   const pendingConsultNote = await buildPendingInstantConsultNote(contact.globalPatientId);
+  console.log(`[pending-consult-note] for incoming message "${text}" from ${phone}: ${pendingConsultNote ? 'ATTACHED' : 'none'}`);
 
   if (activeProvider === 'openai') {
     const result = await runOpenAIAgent(
