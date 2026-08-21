@@ -2,13 +2,31 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../db/prisma.js';
 import { generateRef, generateTempPassword } from '../services/id.service.js';
-import { sendWelcomeCredentialsEmail } from '../services/email.service.js';
+import { sendWelcomeCredentialsEmail, sendPlainEmail } from '../services/email.service.js';
 import { getUploadUrl } from '../services/storage.service.js';
+import { TERMS_VERSION } from '../services/legal.service.js';
 import { requireAuth, type AuthedRequest } from '../middleware/auth.middleware.js';
 import { asyncHandler } from '../middleware/error.middleware.js';
 import { env } from '../config/env.js';
 
 export const labProvidersRouter = Router();
+
+/**
+ * A lab can now be owned two different ways — created by a doctor
+ * (ownerDoctorId set), or self-registered with no owning doctor at all,
+ * managed instead by its own LabStaff accounts. Every management
+ * endpoint below needs to authorize both shapes, not just the original
+ * doctor-owned one, or a self-registered lab would be manageable by
+ * nobody at all once created.
+ */
+async function isAuthorizedForLab(req: AuthedRequest, provider: { id: string; ownerDoctorId: string | null }): Promise<boolean> {
+  if (req.user!.role === 'doctor') return provider.ownerDoctorId === req.user!.sub;
+  if (req.user!.role === 'lab_staff') {
+    const staff = await prisma.labStaff.findUnique({ where: { id: req.user!.sub } });
+    return staff?.labProviderId === provider.id;
+  }
+  return false;
+}
 
 // A doctor's own labs — needed for a "my labs" management screen.
 // Registered before any /:id pattern below, same lesson learned building
@@ -17,14 +35,103 @@ export const labProvidersRouter = Router();
 // the wrong route.
 labProvidersRouter.get(
   '/my',
-  requireAuth('doctor'),
+  requireAuth('doctor', 'lab_staff'),
   asyncHandler(async (req: AuthedRequest, res) => {
+    let where: any;
+    if (req.user!.role === 'doctor') {
+      where = { ownerDoctorId: req.user!.sub };
+    } else {
+      const staff = await prisma.labStaff.findUnique({ where: { id: req.user!.sub } });
+      if (!staff) return res.status(404).json({ success: false, error: 'lab_staff_not_found' });
+      where = { id: staff.labProviderId };
+    }
     const providers = await prisma.labProvider.findMany({
-      where: { ownerDoctorId: req.user!.sub },
+      where,
       include: { services: true, workingHours: { orderBy: { dayOfWeek: 'asc' } } },
       orderBy: { createdAt: 'desc' }
     });
     res.json({ success: true, lab_providers: providers });
+  })
+);
+
+// Self-registration — no doctor required. Creates the lab AND its first
+// (owner) LabStaff login together, in one call, so a lab can sign up and
+// get straight to submitting KYC without anyone else's account
+// involved. Distinct from labProvidersRouter.post('/register',
+// requireAuth('doctor'), ...) below, which is the older doctor-creates-
+// a-lab path — kept as-is, unchanged, since existing doctor-owned labs
+// still need it.
+labProvidersRouter.post(
+  '/register-self',
+  asyncHandler(async (req, res) => {
+    const b = req.body;
+    if (!b.name || !b.service_type) {
+      return res.status(400).json({ success: false, error: 'name and service_type are required' });
+    }
+    if (!b.owner_full_name || (!b.owner_email && !b.owner_phone)) {
+      return res.status(400).json({ success: false, error: 'owner_full_name and (owner_email or owner_phone) are required' });
+    }
+    if (!b.password || b.password.length < 8) {
+      return res.status(400).json({ success: false, error: 'password must be at least 8 characters' });
+    }
+    if (b.terms_accepted !== true) {
+      return res.status(400).json({ success: false, error: 'terms_accepted must be true — the terms must be shown and agreed to before registering' });
+    }
+
+    const dupeConditions = [b.owner_email ? { email: b.owner_email } : null, b.owner_phone ? { phone: b.owner_phone } : null].filter(
+      (c): c is { email: string } | { phone: string } => c !== null
+    );
+    const existingStaff = await prisma.labStaff.findFirst({ where: { OR: dupeConditions } });
+    if (existingStaff) {
+      return res.status(409).json({ success: false, error: 'an_account_with_this_email_or_phone_already_exists' });
+    }
+
+    const passwordHash = await bcrypt.hash(b.password, 12);
+    const now = new Date();
+
+    // One transaction — a lab created without its owner login (or vice
+    // versa) would be an orphaned, unmanageable record either way.
+    const { labProvider, labStaff } = await prisma.$transaction(async (tx) => {
+      const labProvider = await tx.labProvider.create({
+        data: {
+          providerRef: generateRef('MVL-P'),
+          name: b.name,
+          serviceType: b.service_type,
+          homeServiceFee: b.home_service_fee ?? 0,
+          city: b.city,
+          region: b.region
+        }
+      });
+      const labStaff = await tx.labStaff.create({
+        data: {
+          labProviderId: labProvider.id,
+          fullName: b.owner_full_name,
+          email: b.owner_email,
+          phone: b.owner_phone,
+          passwordHash,
+          mustChangePassword: false, // they chose this password themselves — no reason to force a change
+          termsAcceptedAt: now,
+          termsVersion: TERMS_VERSION
+        }
+      });
+      return { labProvider, labStaff };
+    });
+
+    if (labStaff.email) {
+      await sendPlainEmail(
+        labStaff.email,
+        'Welcome to MedVAULT',
+        `Your lab account has been created. Log in at ${env.webAppUrl}/staff-login with the email/phone and password you just chose. Next step: submit your KYC documents to get verified before you appear to patients.`
+      ).catch((err) => console.error('welcome email failed to send:', err.message));
+    }
+
+    const { passwordHash: _omit, ...safeStaff } = labStaff;
+    res.status(201).json({
+      success: true,
+      lab_provider: labProvider,
+      staff: safeStaff,
+      message: 'Registered. Log in and submit KYC documents to get verified before appearing to patients.'
+    });
   })
 );
 
@@ -56,12 +163,12 @@ labProvidersRouter.post(
 // required before split-payout in lab-payment.service.ts can work.
 labProvidersRouter.patch(
   '/:id',
-  requireAuth('doctor'),
+  requireAuth('doctor', 'lab_staff'),
   asyncHandler(async (req: AuthedRequest, res) => {
     const provider = await prisma.labProvider.findUnique({ where: { id: req.params.id } });
     if (!provider) return res.status(404).json({ success: false, error: 'lab_provider_not_found' });
-    if (provider.ownerDoctorId !== req.user!.sub) {
-      return res.status(403).json({ success: false, error: 'not_the_owner_of_this_lab' });
+    if (!(await isAuthorizedForLab(req, provider))) {
+      return res.status(403).json({ success: false, error: 'not_authorized_for_this_lab' });
     }
     const { momo_number, momo_network, home_service_fee, email } = req.body;
     const updated = await prisma.labProvider.update({
@@ -82,12 +189,12 @@ labProvidersRouter.patch(
 // always means "here's my new week," not "add one more window."
 labProvidersRouter.put(
   '/:id/working-hours',
-  requireAuth('doctor'),
+  requireAuth('doctor', 'lab_staff'),
   asyncHandler(async (req: AuthedRequest, res) => {
     const provider = await prisma.labProvider.findUnique({ where: { id: req.params.id } });
     if (!provider) return res.status(404).json({ success: false, error: 'lab_provider_not_found' });
-    if (provider.ownerDoctorId !== req.user!.sub) {
-      return res.status(403).json({ success: false, error: 'not_the_owner_of_this_lab' });
+    if (!(await isAuthorizedForLab(req, provider))) {
+      return res.status(403).json({ success: false, error: 'not_authorized_for_this_lab' });
     }
     const { windows } = req.body;
     if (!Array.isArray(windows)) {
@@ -122,12 +229,12 @@ labProvidersRouter.put(
 
 labProvidersRouter.post(
   '/:id/services',
-  requireAuth('doctor'),
+  requireAuth('doctor', 'lab_staff'),
   asyncHandler(async (req: AuthedRequest, res) => {
     const provider = await prisma.labProvider.findUnique({ where: { id: req.params.id } });
     if (!provider) return res.status(404).json({ success: false, error: 'lab_provider_not_found' });
-    if (provider.ownerDoctorId !== req.user!.sub) {
-      return res.status(403).json({ success: false, error: 'not_the_owner_of_this_lab' });
+    if (!(await isAuthorizedForLab(req, provider))) {
+      return res.status(403).json({ success: false, error: 'not_authorized_for_this_lab' });
     }
     const b = req.body;
     if (!b.test_name || b.base_price === undefined) {
@@ -148,12 +255,12 @@ labProvidersRouter.post(
 
 labProvidersRouter.patch(
   '/:id/services/:serviceId',
-  requireAuth('doctor'),
+  requireAuth('doctor', 'lab_staff'),
   asyncHandler(async (req: AuthedRequest, res) => {
     const provider = await prisma.labProvider.findUnique({ where: { id: req.params.id } });
     if (!provider) return res.status(404).json({ success: false, error: 'lab_provider_not_found' });
-    if (provider.ownerDoctorId !== req.user!.sub) {
-      return res.status(403).json({ success: false, error: 'not_the_owner_of_this_lab' });
+    if (!(await isAuthorizedForLab(req, provider))) {
+      return res.status(403).json({ success: false, error: 'not_authorized_for_this_lab' });
     }
     const existing = await prisma.labService.findUnique({ where: { id: req.params.serviceId } });
     if (!existing || existing.labProviderId !== provider.id) {
@@ -211,12 +318,12 @@ labProvidersRouter.get(
 
 labProvidersRouter.post(
   '/:id/kyc/upload-url',
-  requireAuth('doctor'),
+  requireAuth('doctor', 'lab_staff'),
   asyncHandler(async (req: AuthedRequest, res) => {
     const provider = await prisma.labProvider.findUnique({ where: { id: req.params.id } });
     if (!provider) return res.status(404).json({ success: false, error: 'lab_provider_not_found' });
-    if (provider.ownerDoctorId !== req.user!.sub) {
-      return res.status(403).json({ success: false, error: 'not_the_owner_of_this_lab' });
+    if (!(await isAuthorizedForLab(req, provider))) {
+      return res.status(403).json({ success: false, error: 'not_authorized_for_this_lab' });
     }
     const { file_name, content_type } = req.body;
     if (!file_name || !content_type) {
@@ -229,12 +336,12 @@ labProvidersRouter.post(
 
 labProvidersRouter.post(
   '/:id/kyc',
-  requireAuth('doctor'),
+  requireAuth('doctor', 'lab_staff'),
   asyncHandler(async (req: AuthedRequest, res) => {
     const provider = await prisma.labProvider.findUnique({ where: { id: req.params.id } });
     if (!provider) return res.status(404).json({ success: false, error: 'lab_provider_not_found' });
-    if (provider.ownerDoctorId !== req.user!.sub) {
-      return res.status(403).json({ success: false, error: 'not_the_owner_of_this_lab' });
+    if (!(await isAuthorizedForLab(req, provider))) {
+      return res.status(403).json({ success: false, error: 'not_authorized_for_this_lab' });
     }
     const { business_registration_number, business_registration_key, lab_accreditation_key, owner_id_key } = req.body;
     if (!business_registration_number || !business_registration_key || !owner_id_key) {
@@ -264,12 +371,12 @@ labProvidersRouter.post(
 
 labProvidersRouter.post(
   '/:id/staff',
-  requireAuth('doctor'),
+  requireAuth('doctor', 'lab_staff'),
   asyncHandler(async (req: AuthedRequest, res) => {
     const provider = await prisma.labProvider.findUnique({ where: { id: req.params.id } });
     if (!provider) return res.status(404).json({ success: false, error: 'lab_provider_not_found' });
-    if (provider.ownerDoctorId !== req.user!.sub) {
-      return res.status(403).json({ success: false, error: 'not_the_owner_of_this_lab' });
+    if (!(await isAuthorizedForLab(req, provider))) {
+      return res.status(403).json({ success: false, error: 'not_authorized_for_this_lab' });
     }
     const { full_name, email, phone } = req.body;
     if (!full_name || (!email && !phone)) {
@@ -304,12 +411,12 @@ labProvidersRouter.post(
 
 labProvidersRouter.get(
   '/:id/staff',
-  requireAuth('doctor'),
+  requireAuth('doctor', 'lab_staff'),
   asyncHandler(async (req: AuthedRequest, res) => {
     const provider = await prisma.labProvider.findUnique({ where: { id: req.params.id } });
     if (!provider) return res.status(404).json({ success: false, error: 'lab_provider_not_found' });
-    if (provider.ownerDoctorId !== req.user!.sub) {
-      return res.status(403).json({ success: false, error: 'not_the_owner_of_this_lab' });
+    if (!(await isAuthorizedForLab(req, provider))) {
+      return res.status(403).json({ success: false, error: 'not_authorized_for_this_lab' });
     }
     const staff = await prisma.labStaff.findMany({ where: { labProviderId: provider.id } });
     res.json({ success: true, staff: staff.map(({ passwordHash: _omit, ...s }: any) => s) });

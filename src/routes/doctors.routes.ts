@@ -6,6 +6,7 @@ import { generateRef, generateTempPassword } from '../services/id.service.js';
 import { signToken } from '../services/jwt.service.js';
 import { sendWelcomeCredentialsEmail } from '../services/email.service.js';
 import { getUploadUrl, getObjectBytes, objectExists } from '../services/storage.service.js';
+import { TERMS_VERSION } from '../services/legal.service.js';
 import { setAvailability, getAvailability, getSlotsForNextDays } from '../services/availability.service.js';
 import { requireAuth, type AuthedRequest } from '../middleware/auth.middleware.js';
 import { asyncHandler } from '../middleware/error.middleware.js';
@@ -21,6 +22,9 @@ doctorsRouter.post(
     const b = req.body;
     if (!b.full_name || (!b.phone && !b.email)) {
       return res.status(400).json({ success: false, error: 'full_name and (phone or email) are required' });
+    }
+    if (b.terms_accepted !== true) {
+      return res.status(400).json({ success: false, error: 'terms_accepted must be true — the terms must be shown and agreed to before registering' });
     }
 
     const dupeConditions = [b.email ? { email: b.email } : null, b.phone ? { phone: b.phone } : null].filter(
@@ -43,7 +47,9 @@ doctorsRouter.post(
         mustChangePassword: true,
         specialty: b.specialty,
         licenseNumber: b.license_number,
-        providerType: b.provider_type ?? 'independent'
+        providerType: b.provider_type ?? 'independent',
+        termsAcceptedAt: new Date(),
+        termsVersion: TERMS_VERSION
       }
     });
 

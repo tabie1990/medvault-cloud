@@ -362,6 +362,13 @@ model Doctor {
   // the bytes through our own server so the response can carry a real
   // Cache-Control header regardless of the presigned URL's own expiry.
   profilePhotoKey     String?
+  // The digital signature the person asked for: a timestamp is proof of
+  // acceptance, not a scanned signature image — pairing it with the
+  // exact version of the terms they agreed to (TERMS_VERSION in
+  // legal.service.ts) is what makes "I agreed to this" verifiable later,
+  // since the text itself may change over time.
+  termsAcceptedAt     DateTime?
+  termsVersion        String?
   // Signature and stamp images, embedded into generated prescription/lab-
   // request PDFs. Private-only, same as profilePhotoKey's storage
   // pattern, but never served through a public endpoint the way the
@@ -409,6 +416,12 @@ model LabStaff {
   phone              String?  @unique
   passwordHash       String
   mustChangePassword Boolean  @default(true)
+  // Terms are signed by the actual person, not the abstract lab entity —
+  // same reasoning as Doctor.termsAcceptedAt. The staff member who
+  // self-registers the lab is the one who signs; anyone invited by them
+  // afterward hasn't personally agreed to anything yet.
+  termsAcceptedAt    DateTime?
+  termsVersion       String?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
   labProvider        LabProvider @relation(fields: [labProviderId], references: [id])
