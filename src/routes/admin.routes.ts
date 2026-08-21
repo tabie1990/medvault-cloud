@@ -305,6 +305,27 @@ adminRouter.get(
   })
 );
 
+// All labs, any verification status — distinct from GET /kyc/pending,
+// which only shows the ones still awaiting a decision. This is the
+// general "what labs exist" view an admin needs once self-service lab
+// registration means labs can appear without a doctor ever being
+// involved.
+adminRouter.get(
+  '/labs',
+  requireAuth('admin'),
+  asyncHandler(async (_req, res) => {
+    const labs = await prisma.labProvider.findMany({
+      include: {
+        services: true,
+        staff: { select: { id: true, fullName: true, email: true, phone: true } },
+        ownerDoctor: { select: { id: true, fullName: true } }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json({ success: true, labs });
+  })
+);
+
 adminRouter.post(
   '/hospitals/:hospitalId/services',
   requireAuth('admin'),
