@@ -100,7 +100,25 @@ export async function checkTransactionStatus(reference: string): Promise<{ statu
   return { status: data.status, raw: data };
 }
 
-/** Disburses funds out to a MoMo number (platform fee or provider payout). */
+/**
+ * Disburses funds out to a MoMo number (platform fee or provider payout).
+ *
+ * IMPORTANT: this hits Campay's `/withdraw/` endpoint, not `/transfer/` —
+ * an earlier version of this file called `/transfer/`, which doesn't
+ * exist on Campay's real API at all (confirmed via a direct curl test:
+ * a genuine 404 HTML page, not a JSON error). This is almost certainly
+ * the real reason every prior "transfer just fails/times out" observation
+ * happened, in both sandbox and production, going back to Block 4 —
+ * the endpoint itself never existed, so every call was doomed regardless
+ * of credentials, balance, or account status.
+ *
+ * Separately — confirmed directly against production on 2026-09-09 —
+ * this merchant account does not yet have API withdrawals enabled at
+ * all ("API WITHDRAWALS UNAUTHORIZED", a real 401 from Campay). This
+ * fix alone does not make split-payout work; Campay support/account
+ * management needs to explicitly enable withdrawal permission on the
+ * account before any transfer will succeed, correct endpoint or not.
+ */
 export async function transfer(
   toPhone: string,
   amount: number,
@@ -108,7 +126,7 @@ export async function transfer(
   externalReference: string
 ): Promise<{ ok: boolean; data: any }> {
   assertConfigured();
-  const res = await campayFetch(`${env.campayBaseUrl}transfer/`, {
+  const res = await campayFetch(`${env.campayBaseUrl}withdraw/`, {
     method: 'POST',
     headers: { Authorization: `Token ${env.campayToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
