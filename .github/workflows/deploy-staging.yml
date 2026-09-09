@@ -1,0 +1,25 @@
+name: Deploy MedVAULT Cloud API (Staging)
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.STAGING_SERVER_HOST }}
+          username: root
+          key: ${{ secrets.STAGING_DEPLOY_SSH_KEY }}
+          script: |
+            cd /opt/medvault-cloud
+            git fetch origin staging
+            git reset --hard origin/staging
+            npm install
+            npx prisma generate
+            npx prisma migrate deploy
+            npm run build
+            pm2 restart medvault-api-staging || pm2 start dist/server.js --name medvault-api-staging
+            pm2 save
