@@ -17,6 +17,7 @@
     "prisma:studio": "prisma studio",
     "seed:admin": "tsx src/scripts/seed-admin.ts",
     "seed:epi-schedule": "tsx src/scripts/seed-epi-schedule.ts",
+	"seed:back-to-school": "tsx src/scripts/seed-back-to-school-offer.ts",
     "backfill:vaccination-schedule": "tsx src/scripts/backfill-vaccination-schedule.ts"
   },
   "dependencies": {

@@ -1,0 +1,39 @@
+{
+  "name": "medvault-cloud",
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "seed:admin": "tsx src/scripts/seed-admin.ts",
+    "seed:epi-schedule": "tsx src/scripts/seed-epi-schedule.ts",
+    "backfill:vaccination-schedule": "tsx src/scripts/backfill-vaccination-schedule.ts",
+    "seed:back-to-school": "tsx src/scripts/seed-back-to-school-offer.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1085.0",
+    "@aws-sdk/s3-request-presigner": "^3.1085.0",
+    "@prisma/client": "^5.22.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "nodemailer": "^9.0.3",
+    "openai": "^7.4.0",
+    "pdfkit": "^0.15.0",
+    "swagger-ui-express": "^5.0.1"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/morgan": "^1.9.9",
+    "@types/node": "^20.14.0",
+    "@types/nodemailer": "^6.4.15",
+    "@types/pdfkit": "^0.13.4",
+    "prisma": "^5.22.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.5.0"
+  }
+}

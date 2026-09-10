@@ -895,3 +895,55 @@ model TeleconsultRequest {
 
   @@index([status, expiresAt])
 }
+
+// ── Health campaign packages (e.g. "Back-to-School Plus") ──────────
+//
+// Deliberately NOT modeled as a real-time slot booking against a
+// specific doctor/hospital, unlike normal appointments — the actual
+// flow described is closer to lead capture + payment: a parent submits
+// their children's details and preferred date/time range, pays
+// up-front, and MedVAULT staff manually arrange the actual visit
+// afterward. Building this against the existing appointment/slot system
+// would have meant picking a specific hospital and doctor slot in the
+// same conversation turn, which the requested flow never asks for.
+model PackageOffer {
+  id             String   @id @default(uuid()) @db.Uuid
+  name           String // "Back-to-School Plus"
+  description    String?
+  includedItems  Json // ["General consultation", "Malaria screening", "Blood group", "Hemoglobin", "Vision screening"]
+  basePrice      Decimal
+  homeServiceFee Decimal  @default(4500)
+  maxChildAge    Int      @default(17)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  bookings       PackageBooking[]
+}
+
+model PackageBooking {
+  id                 String    @id @default(uuid()) @db.Uuid
+  bookingRef         String    @unique
+  offerId            String    @db.Uuid
+  guardianName       String?
+  guardianPhone      String
+  city               String
+  childrenCount      Int
+  childrenAges       Json // [8, 12]
+  homeService        Boolean   @default(false)
+  preferredDate      DateTime?
+  preferredTimeRange String? // free text, e.g. "Morning (9am-12pm)" — a real time slot isn't picked here
+  totalPrice         Decimal
+  // pending_payment -> paid -> scheduled -> completed, or cancelled at
+  // any point before completed. "scheduled" specifically means staff
+  // have manually arranged the actual visit — nothing in this system
+  // does that automatically.
+  status             String    @default("pending_payment")
+  paymentStatus      String    @default("unpaid")
+  paymentReference   String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  offer              PackageOffer @relation(fields: [offerId], references: [id])
+
+  @@index([bookingRef])
+  @@index([status])
+}
+

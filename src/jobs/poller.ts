@@ -4,6 +4,9 @@ import { checkPaymentStatus } from '../services/payment.service.js';
 import { createTelemedicineSession, createRoomForSession } from '../services/telemedicine.service.js';
 import { expireStaleInstantRequests } from '../services/teleconsult-request.service.js';
 import { logError } from '../services/error-log.service.js';
+import { env } from '../config/env.js';
+import * as campay from '../services/campay.service.js';
+import { sendTemplateMessage } from '../services/whatsapp.service.js';
 import crypto from 'crypto';
 
 /**
@@ -302,6 +305,36 @@ async function checkOverdueVaccinations() {
   }
 }
 
+/**
+ * Checks pending package bookings (e.g. Back-to-School Plus) against
+ * Campay, same re-check-because-nothing-else-did pattern as the
+ * teleconsult payment poller. On success: flips status to 'paid' and
+ * sends a confirmation with the tracking link — staff still need to
+ * manually move it to 'scheduled' once the actual visit is arranged,
+ * nothing here does that automatically.
+ */
+async function checkPendingPackageBookingPayments() {
+  const pending = await prisma.packageBooking.findMany({
+    where: { paymentStatus: 'unpaid', paymentReference: { not: null } },
+    take: 20
+  });
+
+  for (const booking of pending) {
+    const { status } = await campay.checkTransactionStatus(booking.paymentReference!);
+    if (status !== 'SUCCESSFUL') continue; // still pending or failed — nothing to do yet
+
+    await prisma.packageBooking.update({
+      where: { id: booking.id },
+      data: { paymentStatus: 'paid', status: 'paid' }
+    });
+
+    await sendTemplateMessage(booking.guardianPhone, 'package_booking_confirmed', 'en_US', [
+      booking.bookingRef,
+      `${env.webAppUrl}/track/${booking.bookingRef}`
+    ]).catch(() => {});
+  }
+}
+
 export function startPollers() {
   setInterval(() => fanOutNewAppointments().catch((e) => logError('poller:appointments', e)), INTERVAL_MS);
   setInterval(() => fanOutLabOrderEvents().catch((e) => logError('poller:lab-orders', e)), INTERVAL_MS);
@@ -311,6 +344,7 @@ export function startPollers() {
   setInterval(() => checkPendingTeleconsultPayments().catch((e) => logError('poller:payment-check', e)), INTERVAL_MS);
   setInterval(() => sendUpcomingAppointmentReminders().catch((e) => logError('poller:reminders', e)), INTERVAL_MS);
   setInterval(() => checkOverdueVaccinations().catch((e) => logError('poller:vaccinations', e)), INTERVAL_MS);
+  setInterval(() => checkPendingPackageBookingPayments().catch((e) => logError('poller:package-bookings', e)), INTERVAL_MS);
   // 90-second dispatch window (see teleconsult-request.service.ts) needs
   // to be swept at the same 10s granularity as everything else here, not
   // a slower interval — a stale request sitting 'pending' for even an

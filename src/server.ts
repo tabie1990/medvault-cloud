@@ -24,6 +24,7 @@ import { adminRouter } from './routes/admin.routes.js';
 import { prescriptionsRouter } from './routes/prescriptions.routes.js';
 import { referralsRouter } from './routes/referrals.routes.js';
 import { pediatricRouter } from './routes/pediatric.routes.js';
+import { packagesRouter } from './routes/packages.routes.js';
 
 const app = express();
 // Nginx sits in front of this app (see setup-server.sh) and adds
@@ -117,6 +118,7 @@ app.use('/api/v1/admin', adminRouter);
 app.use('/api/v1/prescriptions', prescriptionsRouter);
 app.use('/api/v1/referrals', referralsRouter);
 app.use('/api/v1/pediatric', pediatricRouter);
+app.use('/api/v1/packages', packagesRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

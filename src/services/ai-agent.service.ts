@@ -7,6 +7,7 @@ import { prisma } from '../db/prisma.js';
 import { env } from '../config/env.js';
 import { sendTextMessage, sendDocumentMessage, sendImageMessage } from './whatsapp.service.js';
 import { generateVaccinationReportPdf } from './pediatric-report.service.js';
+import { collect as campayCollect, normalizeCameroonPhone } from './campay.service.js';
 import { createAppointment } from './appointment.service.js';
 import { createInstantRequest } from './teleconsult-request.service.js';
 import { createLabOrder } from './lab-order.service.js';
@@ -17,7 +18,7 @@ import {
 } from './hospital-roster-availability.service.js';
 import { requestPayment, checkPaymentStatus } from './payment.service.js';
 import { requestLabPayment, checkLabPaymentStatus } from './lab-payment.service.js';
-import { generateGlobalPatientId, generateReferralCode } from './id.service.js';
+import { generateGlobalPatientId, generateReferralCode, generateRef } from './id.service.js';
 import { createPendingVaccinationRecords } from './pediatric.service.js';
 import { findHospitalsNear } from './hospital-search.service.js';
 import { logError } from './error-log.service.js';
@@ -463,6 +464,42 @@ const tools: Anthropic.Tool[] = [
       type: 'object',
       properties: { child_patient_id: { type: 'string' } },
       required: ['child_patient_id']
+    }
+  },
+  {
+    name: 'list_package_offers',
+    description: 'List current health campaign package offers (e.g. Back-to-School Plus) with their real included items and prices. Always call this before describing any offer — never describe one from memory.',
+    input_schema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'create_package_booking',
+    description:
+      "Create a package booking (e.g. Back-to-School Plus). This is a lead-capture booking, not a real-time slot booking — MedVAULT staff will follow up afterward to arrange the actual visit. total_price is never provided by you — it's computed server-side and returned by this tool. Use the real offer_id from list_package_offers.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        offer_id: { type: 'string' },
+        guardian_name: { type: 'string' },
+        guardian_phone: { type: 'string', description: '237XXXXXXXXX' },
+        city: { type: 'string' },
+        children_ages: { type: 'array', items: { type: 'number' } },
+        home_service: { type: 'boolean' },
+        preferred_date: { type: 'string', description: 'YYYY-MM-DD' },
+        preferred_time_range: { type: 'string', description: 'e.g. "Morning (9am-12pm)"' }
+      },
+      required: ['offer_id', 'guardian_phone', 'city', 'children_ages']
+    }
+  },
+  {
+    name: 'request_package_payment',
+    description: 'Request Campay payment for an existing package booking, using its real booking_ref from create_package_booking.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        booking_ref: { type: 'string' },
+        phone: { type: 'string', description: 'Mobile Money number — ask explicitly, never assume it matches the WhatsApp number' }
+      },
+      required: ['booking_ref', 'phone']
     }
   },
   {
@@ -1032,6 +1069,68 @@ async function executeTool(
       if (!report) return JSON.stringify({ success: false, error: 'child_not_found' });
       await sendDocumentMessage(contact.waPhoneNumber, report.url, report.filename, 'MedVAULT Vaccination Report');
       return JSON.stringify({ success: true, sent: true });
+    }
+
+    case 'list_package_offers': {
+      const offers = await prisma.packageOffer.findMany({ where: { isActive: true } });
+      return JSON.stringify({
+        offers: offers.map((o: any) => ({
+          id: o.id,
+          name: o.name,
+          included_items: o.includedItems,
+          base_price: Number(o.basePrice),
+          home_service_fee: Number(o.homeServiceFee),
+          max_child_age: o.maxChildAge
+        }))
+      });
+    }
+
+    case 'create_package_booking': {
+      const offer = await prisma.packageOffer.findUnique({ where: { id: input.offer_id } });
+      if (!offer || !offer.isActive) return JSON.stringify({ success: false, error: 'offer_not_found' });
+
+      const tooOld = (input.children_ages as number[]).filter((age) => age > offer.maxChildAge);
+      if (tooOld.length > 0) {
+        return JSON.stringify({ success: false, error: 'child_age_exceeds_maximum', max_child_age: offer.maxChildAge });
+      }
+
+      const basePrice = Number(offer.basePrice);
+      const homeServiceFee = input.home_service ? Number(offer.homeServiceFee) : 0;
+      const totalPrice = basePrice * input.children_ages.length + homeServiceFee;
+
+      const booking = await prisma.packageBooking.create({
+        data: {
+          bookingRef: generateRef('MVP'),
+          offerId: offer.id,
+          guardianName: input.guardian_name ?? null,
+          guardianPhone: input.guardian_phone,
+          city: input.city,
+          childrenCount: input.children_ages.length,
+          childrenAges: input.children_ages,
+          homeService: !!input.home_service,
+          preferredDate: input.preferred_date ? new Date(input.preferred_date) : null,
+          preferredTimeRange: input.preferred_time_range ?? null,
+          totalPrice
+        }
+      });
+
+      return JSON.stringify({ booking_ref: booking.bookingRef, total_price: totalPrice });
+    }
+
+    case 'request_package_payment': {
+      const booking = await prisma.packageBooking.findUnique({ where: { bookingRef: input.booking_ref } });
+      if (!booking) return JSON.stringify({ success: false, error: 'booking_not_found' });
+      if (booking.paymentStatus === 'paid') return JSON.stringify({ success: false, error: 'already_paid' });
+
+      const cleanPhone = normalizeCameroonPhone(input.phone);
+      const data = await campayCollect(
+        cleanPhone,
+        Number(booking.totalPrice),
+        `MedVAULT ${booking.bookingRef}`,
+        `mv-pkg-${booking.bookingRef}`
+      );
+      await prisma.packageBooking.update({ where: { id: booking.id }, data: { paymentReference: data.reference } });
+      return JSON.stringify({ success: true, reference: data.reference });
     }
 
     case 'generate_referral_code': {

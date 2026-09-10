@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../db/prisma.js';
 import { generateRef, generateTempPassword } from '../services/id.service.js';
 import { sendWelcomeCredentialsEmail, sendPlainEmail } from '../services/email.service.js';
@@ -91,7 +92,7 @@ labProvidersRouter.post(
 
     // One transaction — a lab created without its owner login (or vice
     // versa) would be an orphaned, unmanageable record either way.
-    const { labProvider, labStaff } = await prisma.$transaction(async (tx) => {
+    const { labProvider, labStaff } = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const labProvider = await tx.labProvider.create({
         data: {
           providerRef: generateRef('MVL-P'),
